@@ -1,3 +1,4 @@
+# Modified by LuckyXCoder on 2026-10-31: Pro image and native aspect-ratio options.
 import asyncio
 import builtins
 import codecs

@@ -35,8 +35,9 @@ dev = [
 ]
 
 [project.urls]
-Repository = "https://github.com/HanaokaYuzu/Gemini-API"
-Issues = "https://github.com/HanaokaYuzu/Gemini-API/issues"
+Repository = "https://github.com/LuckyXCoder/gemini-web-bridge"
+Issues = "https://github.com/LuckyXCoder/gemini-web-bridge/issues"
+Upstream = "https://github.com/HanaokaYuzu/Gemini-API"
 
 [tool.setuptools.packages.find]
 where = ["src"]

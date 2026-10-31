@@ -1,3 +1,48 @@
+# Gemini Web Bridge
+
+An independently maintained derivative of [HanaokaYuzu/Gemini-API](https://github.com/HanaokaYuzu/Gemini-API), maintained by **LuckyXCoder**.
+
+This is not an official Google project and is not an official continuation endorsed by the upstream maintainers. The original project and its contributors retain their credits. We continue to track upstream and contribute improvements through separate pull requests.
+
+## Changes in this maintained version
+
+Modified on **2026-10-31**, based on upstream commit `1ad0d4a93e505e77c79769d78ef2997641f973c8`:
+
+- Optional `pro_image=True` for Nano Banana Pro image requests ([upstream PR #370](https://github.com/HanaokaYuzu/Gemini-API/pull/370)); the Pro selector approach also references [PR #304](https://github.com/HanaokaYuzu/Gemini-API/pull/304).
+- Native `aspect_ratio` options ([upstream PR #371](https://github.com/HanaokaYuzu/Gemini-API/pull/371)): `1:1`, `9:16`, `16:9`, `3:4`, `4:3`, `2:3`, `21:9`, `1:8`, `8:1`.
+- Integrated Pro and ratio options, with offline regression tests for independent options, combined requests, and per-turn option changes.
+
+```python
+chat = client.start_chat(model="gemini-pro")
+response = await chat.send_message(
+    "Generate a photo of a cat on a windowsill",
+    pro_image=True,
+    aspect_ratio="9:16",
+)
+```
+
+An eligible signed-in account is required. The conversation model is distinct from the image model. Actual output dimensions are selected by Google and may approximate the requested ratio. A fresh-session combined request returned a 1536x2752 JPEG; the image-model label for that combined run has not been independently verified. Separate Pro-only generation was verified against the web UI label. Long-term session stability, resolution selection, output-format selection and native transparency are not established by these tests.
+
+## Install this version from source
+
+```bash
+git clone https://github.com/LuckyXCoder/gemini-web-bridge.git
+cd gemini-web-bridge
+uv sync --no-dev
+```
+
+The Python import remains `gemini_webapi`. This repository has no separately published PyPI release; `pip install gemini-webapi` installs the upstream package, not these maintenance changes. The inherited badges and upstream installation examples below refer to the original project. Browser-cookie extraction is optional; the command above does not install its dependency.
+
+## License and attribution
+
+This derivative is distributed under the **GNU Affero General Public License v3.0**; see the unchanged [LICENSE](LICENSE). Original copyright, license and attribution notices are retained, together with upstream Git history. Maintenance changes by LuckyXCoder are documented above and in Git history. For modified versions offered over a network, comply with the corresponding-source obligations in section 13. The software license does not grant access to Google services or override their terms.
+
+---
+
+## Inherited project documentation
+
+The following documentation is retained from upstream, with image-option additions for this version.
+
 <!-- markdownlint-disable MD033 MD041 -->
 
 <p align="center">
