@@ -250,6 +250,8 @@ async def get_access_token(
     verbose: bool = False,
     impersonate: BrowserTypeLiteral = BROWSER_TYPE,
     verify: bool = True,
+    cache_dir: str | Path | None = None,
+    use_browser_cookies: bool = True,
 ) -> InitSession:
     """Send a get request to gemini.google.com for each group of available cookies and return
     the value of "SNlM0e" as access token on the first successful request.
@@ -323,17 +325,17 @@ async def get_access_token(
         if base_psid:
             probe = Cookies()
             probe.set(COOKIE_1PSID, base_psid, domain=_COOKIE_DOMAIN, secure=True)
-            cache_file = get_cookies_cache_path(probe, base_psid=base_psid, verbose=verbose)
+            cache_file = get_cookies_cache_path(
+                probe, base_psid=base_psid, verbose=verbose, cache_dir=cache_dir
+            )
 
             if cache_file and cache_file.is_file():
-                if (
-                    jar := _load_cached_jar(cache_file, jar=base_jar, verbose=verbose)
-                ) is not None:
+                if (jar := _load_cached_jar(cache_file, jar=base_jar, verbose=verbose)) is not None:
                     register(jar, "Cache", base_psid)
             elif verbose:
                 logger.debug("Skipping loading cached cookies. Cache file not found.")
         elif cache_files := list(
-            get_cookie_cache_dir().glob(f"{COOKIE_CACHE_PREFIX}*{COOKIE_CACHE_EXTENSION}")
+            get_cookie_cache_dir(cache_dir).glob(f"{COOKIE_CACHE_PREFIX}*{COOKIE_CACHE_EXTENSION}")
         ):
             cache_file = max(cache_files, key=lambda p: p.stat().st_mtime)
             if (jar := _load_cached_jar(cache_file, verbose=verbose)) is not None:
@@ -358,7 +360,9 @@ async def get_access_token(
 
         # Local browser cookies as the last authenticated source
         try:
-            if browser_cookies := load_browser_cookies(domain_name=_DOMAIN_NAME, verbose=verbose):
+            if use_browser_cookies and (
+                browser_cookies := load_browser_cookies(domain_name=_DOMAIN_NAME, verbose=verbose)
+            ):
                 for browser, cookie_list in browser_cookies.items():
                     temp_cookies = {c["name"]: c["value"] for c in cookie_list}
                     secure_1psid = temp_cookies.get(COOKIE_1PSID)

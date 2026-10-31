@@ -108,6 +108,10 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
         __Secure-1PSIDTS cookie value, some Google accounts don't require this value, provide only if it's in the cookie list.
     proxy: `str`, optional
         Proxy URL.
+    cookie_cache_dir: `str | Path | None`, optional
+        Per-client cookie cache directory. None keeps the environment/default location.
+    use_browser_cookies: `bool`, optional
+        Whether initialization may read local browser cookies. Defaults to True.
     kwargs: `dict`, optional
         Additional arguments which will be passed to the http client.
         Refer to `curl_cffi.requests.AsyncSession` for more information.
@@ -142,6 +146,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
         "client",
         "close_delay",
         "close_task",
+        "cookie_cache_dir",
         "impersonate",
         "kwargs",
         "language",
@@ -152,6 +157,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
         "refresh_task",
         "session_id",
         "timeout",
+        "use_browser_cookies",
         "verbose",
         "watchdog_timeout",
     ]
@@ -161,10 +167,14 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
         secure_1psid: str | None = None,
         secure_1psidts: str | None = None,
         proxy: str | None = None,
+        cookie_cache_dir: str | Path | None = None,
+        use_browser_cookies: bool = True,
         **kwargs,
     ):
         super().__init__()
         self.proxy = proxy
+        self.cookie_cache_dir = Path(cookie_cache_dir) if cookie_cache_dir is not None else None
+        self.use_browser_cookies = use_browser_cookies
         self.client: AsyncSession | None = None
         self.access_token: str | None = None
         self.build_label: str | None = None
@@ -309,6 +319,8 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
                     verbose=self.verbose,
                     impersonate=impersonate,
                     verify=self.kwargs.get("verify", True),
+                    cache_dir=self.cookie_cache_dir,
+                    use_browser_cookies=self.use_browser_cookies,
                 )
 
                 init_session.client.timeout = timeout
@@ -413,7 +425,12 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
             return
 
         try:
-            save_cookies(self._cookies, base_psid=self._base_psid, verbose=self.verbose)
+            save_cookies(
+                self._cookies,
+                base_psid=self._base_psid,
+                verbose=self.verbose,
+                cache_dir=self.cookie_cache_dir,
+            )
         except OSError as e:
             logger.warning(f"Failed to save cookies to cache file: {e}")
 
@@ -482,7 +499,10 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
                 async with self._lock:
                     # Refresh all cookies in the background to keep the session alive.
                     new_1psidts = await rotate_1psidts(
-                        self._live_client, base_psid=self._base_psid, verbose=self.verbose
+                        self._live_client,
+                        base_psid=self._base_psid,
+                        verbose=self.verbose,
+                        cache_dir=self.cookie_cache_dir,
                     )
 
                     if not new_1psidts:
@@ -588,7 +608,10 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
                         "The cached cookies may have expired or been revoked. Please check your cookies."
                     )
                     clear_cookies_cache(
-                        self.cookies, base_psid=self._base_psid, verbose=self.verbose
+                        self.cookies,
+                        base_psid=self._base_psid,
+                        verbose=self.verbose,
+                        cache_dir=self.cookie_cache_dir,
                     )
                 if self.account_status in [
                     AccountStatus.LOCATION_REJECTED,
