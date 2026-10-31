@@ -207,3 +207,8 @@ temp/
 # Cookies and credentials
 cookies.json
 *.cookies
+
+# Local HTTP account configuration and private session state
+accounts.local.json
+secrets/
+state/

@@ -1,4 +1,4 @@
-"""Optional single-account HTTP image service. Run with python -m gemini_webapi.server."""
+"""Optional multi-account HTTP image service. Run with python -m gemini_webapi.server."""
 
 import asyncio
 import base64
@@ -7,6 +7,7 @@ import os
 import sys
 import time
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal
@@ -20,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import GeminiClient
 from .client import _SUPPORTED_IMAGE_ASPECT_RATIOS
+from .exceptions import AuthError, UsageLimitExceededError
 from .types import GeneratedImage
 from .utils import logger
 
@@ -63,81 +65,238 @@ async def generate_image(client, request, chat_model):
     return {"created": int(time.time()), "data": [{"b64_json": encoded}]}
 
 
-def create_app(client=None, api_key=None, timeout=300, queue_size=4):
-    """One process, one client, one worker; client injection is for offline tests."""
+@dataclass
+class Account:
+    id: str
+    client: object
+    status: str = "starting"
+
+
+class AccountConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    cookies_file: str
+    cache_dir: str
+    enabled: bool = True
+
+
+def load_accounts():
+    """Read account files once; never mutate process-wide cache settings."""
+    config_path = os.environ.get("GEMINI_BRIDGE_ACCOUNTS")
+    cookie_path = os.environ.get("GEMINI_BRIDGE_COOKIES")
+    if config_path and cookie_path:
+        raise ValueError("Set GEMINI_BRIDGE_ACCOUNTS or GEMINI_BRIDGE_COOKIES, not both")
+    if not config_path:
+        if not cookie_path:
+            raise ValueError("GEMINI_BRIDGE_ACCOUNTS or GEMINI_BRIDGE_COOKIES is required")
+        specs = [("default", Path(cookie_path).expanduser(), os.environ.get("GEMINI_COOKIE_PATH"))]
+    else:
+        path = Path(config_path).expanduser().resolve()
+        try:
+            raw = orjson.loads(path.read_bytes())
+            if (
+                not isinstance(raw, dict)
+                or set(raw) != {"accounts"}
+                or not isinstance(raw["accounts"], list)
+            ):
+                raise ValueError()
+            configs = [AccountConfig.model_validate(entry) for entry in raw["accounts"]]
+        except Exception:
+            raise ValueError("Invalid account configuration file") from None
+        if len({entry.id for entry in configs}) != len(configs):
+            raise ValueError("Account IDs must be unique")
+        specs = []
+        for entry in configs:
+            if entry.enabled:
+                cookies = (path.parent / Path(entry.cookies_file).expanduser()).resolve()
+                cache = (path.parent / Path(entry.cache_dir).expanduser()).resolve()
+                specs.append((entry.id, cookies, cache))
+    if not specs:
+        raise ValueError("At least one enabled account is required")
+    accounts = []
+    seen_psids = set()
+    seen_dirs = set()
+    for account_id, cookie_file, cache_dir in specs:
+        try:
+            raw = orjson.loads(cookie_file.read_bytes())
+            cookies = raw.get("cookies", raw)
+            psid = cookies.get("__Secure-1PSID")
+            psidts = cookies.get("__Secure-1PSIDTS", "")
+            if not isinstance(psid, str) or not psid.strip() or not isinstance(psidts, str):
+                raise ValueError()
+        except Exception:
+            raise ValueError(f"Invalid cookie file for account {account_id}") from None
+        if psid in seen_psids:
+            raise ValueError("Duplicate account cookies are not allowed")
+        seen_psids.add(psid)
+        if cache_dir is not None:
+            cache_dir = Path(cache_dir).expanduser().resolve()
+            if cache_dir in seen_dirs:
+                raise ValueError("Each account must have a distinct cache directory")
+            seen_dirs.add(cache_dir)
+        accounts.append(
+            Account(
+                account_id,
+                SingleSubmissionClient(
+                    psid,
+                    psidts,
+                    proxy=os.environ.get("GEMINI_PROXY") or None,
+                    cookie_cache_dir=cache_dir,
+                    use_browser_cookies=False,
+                ),
+            )
+        )
+    # Validate the complete configuration before creating directories.
+    for directory in seen_dirs:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        directory.chmod(0o700)
+    return accounts
+
+
+def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=None):
+    """One process, one worker per account, one bounded shared queue."""
     key = api_key or os.environ.get("GEMINI_BRIDGE_API_KEY")
     if not key:
         raise ValueError("GEMINI_BRIDGE_API_KEY is required")
     if timeout <= 0 or queue_size < 1:
         raise ValueError("timeout and queue_size must be positive")
-    if client is None:
-        path = os.environ.get("GEMINI_BRIDGE_COOKIES")
-        if not path:
-            raise ValueError("GEMINI_BRIDGE_COOKIES must point to a cookies JSON file")
-        data = orjson.loads(Path(path).read_bytes())
-        cookies = data.get("cookies", data)
-        if not isinstance(cookies, dict) or not cookies.get("__Secure-1PSID"):
-            raise ValueError("Cookie file must contain __Secure-1PSID")
-        client = SingleSubmissionClient(
-            cookies["__Secure-1PSID"],
-            cookies.get("__Secure-1PSIDTS", ""),
-            proxy=os.environ.get("GEMINI_PROXY") or None,
-        )
+    if client is not None and accounts is not None:
+        raise ValueError("Pass client or accounts, not both")
+    pool = (
+        accounts
+        if accounts is not None
+        else ([Account("default", client)] if client is not None else load_accounts())
+    )
+    if (
+        not pool
+        or len({a.id for a in pool}) != len(pool)
+        or len({id(a.client) for a in pool}) != len(pool)
+    ):
+        raise ValueError("Accounts must have distinct IDs and clients")
     chat_model = os.environ.get("GEMINI_BRIDGE_CHAT_MODEL", "gemini-pro")
 
-    async def initialize():
-        await client.init(timeout=timeout, auto_close=False, auto_refresh=True, verbose=False)
-        if not client.access_token or not client._check_account_status():
-            raise RuntimeError("Gemini account is not authenticated or available")
+    async def initialize(account):
+        await account.client.init(
+            timeout=timeout, auto_close=False, auto_refresh=True, verbose=False
+        )
+        if not account.client.access_token or not account.client._check_account_status():
+            raise AuthError("Gemini account is not authenticated or available")
 
-    async def worker(queue):
-        while True:
+    async def close(account):
+        try:
+            await account.client.close()
+        except Exception:
+            # Keep cleanup failures from killing workers and stranding queued callers.
+            account.status = "paused"
+            logger.warning("Account {} cleanup failed; paused", account.id)
+
+    def available():
+        return any(a.status in ("idle", "busy") for a in pool)
+
+    def drain_unavailable(queue):
+        if available():
+            return
+        while not queue.empty():
+            _, future = queue.get_nowait()
+            if not future.done():
+                future.set_result(
+                    error_response(
+                        503,
+                        "no_available_accounts",
+                        "No available accounts. No generation was submitted.",
+                    )
+                )
+            queue.task_done()
+
+    async def worker(account, queue):
+        while account.status != "paused":
             request, future = await queue.get()
+            initialized = False
             try:
+                if future.cancelled():
+                    continue
+                account.status = "busy"
                 async with asyncio.timeout(timeout):
-                    await initialize()
-                    result = await generate_image(client, request, chat_model)
+                    await initialize(account)
+                    initialized = True
+                    result = await generate_image(account.client, request, chat_model)
                 if not future.done():
                     future.set_result(result)
-            except TimeoutError:
+            except asyncio.CancelledError:
                 if not future.done():
                     future.set_result(
                         error_response(
-                            504,
-                            "generation_timeout",
-                            "Generation timed out; upstream may still be processing. No automatic resubmission.",
+                            503,
+                            "service_stopping",
+                            "Service is stopping; generation outcome may be unknown.",
                         )
                     )
-                await client.close()
-            except Exception:
+                raise
+            except Exception as exc:
+                if (
+                    not initialized
+                    or isinstance(exc, (AuthError, UsageLimitExceededError))
+                    or getattr(exc, "status_code", None) == 401
+                    or not account.client._check_account_status()
+                ):
+                    account.status = "paused"
+                if not initialized:
+                    result = error_response(
+                        503,
+                        "account_unavailable",
+                        "Selected account is unavailable. No generation was submitted.",
+                    )
+                elif isinstance(exc, TimeoutError):
+                    result = error_response(
+                        504,
+                        "generation_timeout",
+                        "Generation timed out; upstream may still be processing. No automatic resubmission.",
+                    )
+                else:
+                    result = error_response(
+                        502,
+                        "generation_failed",
+                        "Generation or image download failed. No automatic resubmission.",
+                    )
                 if not future.done():
-                    future.set_result(
-                        error_response(
-                            502,
-                            "generation_failed",
-                            "Generation or image download failed. No automatic resubmission.",
-                        )
-                    )
-                await client.close()
+                    future.set_result(result)
+                await close(account)
             finally:
+                if account.status != "paused":
+                    account.status = "idle"
                 queue.task_done()
+                drain_unavailable(queue)
+
+    async def start_account(account):
+        try:
+            async with asyncio.timeout(timeout):
+                await initialize(account)
+            account.status = "idle"
+        except Exception:
+            account.status = "paused"
+            await close(account)
+            logger.warning("Account {} initialization failed; paused", account.id)
 
     @asynccontextmanager
     async def lifespan(app):
         queue = asyncio.Queue(maxsize=queue_size)
         app.state.queue = queue
-        task = None
+        app.state.accounts = pool
+        tasks = []
         try:
-            async with asyncio.timeout(timeout):
-                await initialize()
-            task = asyncio.create_task(worker(queue))
+            await asyncio.gather(*(start_account(a) for a in pool))
+            tasks = [asyncio.create_task(worker(a, queue)) for a in pool if a.status == "idle"]
             yield
         finally:
-            if task:
+            for task in tasks:
                 task.cancel()
+            for task in tasks:
                 with suppress(asyncio.CancelledError):
                     await task
-            await client.close()
+            for account in pool:
+                account.status = "paused"
+            drain_unavailable(queue)
+            await asyncio.gather(*(close(a) for a in pool))
 
     async def authorize(authorization: str | None = Header(default=None)):
         provided = authorization or ""
@@ -179,6 +338,10 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4):
             ],
         }
 
+    @app.get("/v1/accounts", dependencies=[Depends(authorize)])
+    async def account_status():
+        return {"data": [{"id": a.id, "status": a.status} for a in pool]}
+
     @app.post("/v1/images/generations", dependencies=[Depends(authorize)])
     async def images(request: ImageRequest):
         if not request.prompt.strip() or (
@@ -187,6 +350,10 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4):
         ):
             raise HTTPException(
                 status_code=400, detail="Invalid prompt or unsupported aspect_ratio"
+            )
+        if not available():
+            return error_response(
+                503, "no_available_accounts", "No available accounts. No generation was submitted."
             )
         future = asyncio.get_running_loop().create_future()
         try:
@@ -197,7 +364,11 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4):
             )
         # Keep the worker independent from client cancellation. A disconnected caller
         # must not release the single-account slot while its generation is still active.
-        return await asyncio.shield(future)
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            future.cancel()
+            raise
 
     return app
 

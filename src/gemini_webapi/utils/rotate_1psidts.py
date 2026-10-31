@@ -32,9 +32,9 @@ def _hash_psid(psid: str) -> str:
     return hashlib.sha256(psid.strip().encode("utf-8")).hexdigest()[:32]
 
 
-def get_cookie_cache_dir() -> Path:
+def get_cookie_cache_dir(cache_dir: str | Path | None = None) -> Path:
     """Lazy helper to get the cookie cache directory."""
-    _path = os.getenv("GEMINI_COOKIE_PATH")
+    _path = cache_dir if cache_dir is not None else os.getenv("GEMINI_COOKIE_PATH")
     return Path(_path) if _path else Path(tempfile.gettempdir()) / "gemini_webapi"
 
 
@@ -96,6 +96,7 @@ def get_cookies_cache_path(
     cookies: Cookies | None = None,
     base_psid: str | None = None,
     verbose: bool = False,
+    cache_dir: str | Path | None = None,
 ) -> Path | None:
     """Helper to get and ensure the cache file path based on hashed __Secure-1PSID.
 
@@ -109,7 +110,7 @@ def get_cookies_cache_path(
             logger.debug("Cookie cache path not applicable: __Secure-1PSID not found.")
         return None
 
-    cache_dir = get_cookie_cache_dir()
+    cache_dir = get_cookie_cache_dir(cache_dir)
     hashed_path = (
         cache_dir / f"{COOKIE_CACHE_PREFIX}{_hash_psid(target_psid)}{COOKIE_CACHE_EXTENSION}"
     )
@@ -135,6 +136,7 @@ async def rotate_1psidts(
     client: AsyncSession,
     base_psid: str | None = None,
     verbose: bool = False,
+    cache_dir: str | Path | None = None,
 ) -> str | None:
     """Refresh the __Secure-1PSIDTS cookie and store the refreshed cookie value in cache file.
 
@@ -160,7 +162,9 @@ async def rotate_1psidts(
         If request failed with other status codes.
 
     """
-    path = get_cookies_cache_path(client.cookies, base_psid=base_psid, verbose=verbose)
+    path = get_cookies_cache_path(
+        client.cookies, base_psid=base_psid, verbose=verbose, cache_dir=cache_dir
+    )
     if not path:
         return None
 
@@ -180,11 +184,13 @@ async def rotate_1psidts(
             f"HTTP Request: POST {Endpoint.ROTATE_COOKIES} [{response.status_code}] (HTTP/{format_http_version(response.http_version)})"
         )
     if response.status_code == 401:
-        clear_cookies_cache(client.cookies, base_psid=base_psid, verbose=verbose)
+        clear_cookies_cache(
+            client.cookies, base_psid=base_psid, verbose=verbose, cache_dir=cache_dir
+        )
         raise AuthError
     response.raise_for_status()
 
-    save_cookies(client.cookies, base_psid=base_psid, verbose=verbose)
+    save_cookies(client.cookies, base_psid=base_psid, verbose=verbose, cache_dir=cache_dir)
     if new_1psidts := extract_cookie_value(client.cookies, COOKIE_1PSIDTS):
         return new_1psidts
 
@@ -199,6 +205,7 @@ def clear_cookies_cache(
     cookies: Cookies | None = None,
     base_psid: str | None = None,
     verbose: bool = False,
+    cache_dir: str | Path | None = None,
 ) -> None:
     """Delete the cached cookies for a session.
 
@@ -212,7 +219,9 @@ def clear_cookies_cache(
         If `True`, will print more infomation in logs.
 
     """
-    path = get_cookies_cache_path(cookies, base_psid=base_psid, verbose=verbose)
+    path = get_cookies_cache_path(
+        cookies, base_psid=base_psid, verbose=verbose, cache_dir=cache_dir
+    )
     if path and path.is_file():
         try:
             path.unlink()
@@ -226,7 +235,7 @@ def clear_cookies_cache(
     current_psid = extract_cookie_value(cookies, COOKIE_1PSID) if cookies else None
     if current_psid and base_psid and current_psid != base_psid:
         alias_path = (
-            get_cookie_cache_dir()
+            get_cookie_cache_dir(cache_dir)
             / f"{COOKIE_CACHE_PREFIX}{_hash_psid(current_psid)}{COOKIE_CACHE_EXTENSION}"
         )
         if alias_path.is_file() and alias_path != path:
@@ -238,7 +247,8 @@ def clear_cookies_cache(
     # Also clean up legacy unhashed file if it exists
     if target_psid := (base_psid or current_psid):
         legacy_path = (
-            get_cookie_cache_dir() / f"{COOKIE_CACHE_PREFIX}{target_psid}{COOKIE_CACHE_EXTENSION}"
+            get_cookie_cache_dir(cache_dir)
+            / f"{COOKIE_CACHE_PREFIX}{target_psid}{COOKIE_CACHE_EXTENSION}"
         )
         if legacy_path.is_file() and legacy_path != path:
             with contextlib.suppress(OSError):
@@ -251,6 +261,7 @@ def save_cookies(
     cookies: Cookies,
     base_psid: str | None = None,
     verbose: bool = False,
+    cache_dir: str | Path | None = None,
 ) -> None:
     """Save persistent cookies to cache file with stable hash prefix and value alias."""
     current_psid = extract_cookie_value(cookies, COOKIE_1PSID)
@@ -260,7 +271,9 @@ def save_cookies(
             logger.debug("Skipping saving cookies: __Secure-1PSID not found.")
         return
 
-    path = get_cookies_cache_path(cookies, base_psid=target_psid, verbose=verbose)
+    path = get_cookies_cache_path(
+        cookies, base_psid=target_psid, verbose=verbose, cache_dir=cache_dir
+    )
     if not path:
         return
 
@@ -296,7 +309,7 @@ def save_cookies(
         # If current rotated PSID differs from base_psid, link or write the alias file
         if current_psid and base_psid and current_psid != base_psid:
             alias_path = (
-                get_cookie_cache_dir()
+                get_cookie_cache_dir(cache_dir)
                 / f"{COOKIE_CACHE_PREFIX}{_hash_psid(current_psid)}{COOKIE_CACHE_EXTENSION}"
             )
             if alias_path != path:

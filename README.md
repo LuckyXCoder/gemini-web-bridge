@@ -33,7 +33,7 @@ uv sync --no-dev
 
 The Python import remains `gemini_webapi`. This repository has no separately published PyPI release; `pip install gemini-webapi` installs the upstream package, not these maintenance changes. The inherited badges and upstream installation examples below refer to the original project. Browser-cookie extraction is optional; the command above does not install its dependency.
 
-## Optional local HTTP service (single account)
+## Optional local HTTP service
 
 Install the optional server dependencies without browser-cookie extraction:
 
@@ -47,8 +47,8 @@ export GEMINI_PROXY=http://127.0.0.1:10808
 uv run --no-dev --extra server python -m gemini_webapi.server
 ```
 
-The service binds to `127.0.0.1:18088` and requires a signed-in, available account at
-startup. Cookie JSON may be a name/value object or `{ "cookies": { ... } }` and must
+The service binds to `127.0.0.1:18088`. Each account must be signed in and available
+to receive image tasks; accounts that fail initialization are paused. Cookie JSON may be a name/value object or `{ "cookies": { ... } }` and must
 contain `__Secure-1PSID`. Keep the cookie file and cache private. The API key above
 is a separate service credential; never send Google cookies to callers.
 
@@ -58,6 +58,42 @@ curl http://127.0.0.1:18088/v1/images/generations \
   -H 'Content-Type: application/json' \
   -d '{"model":"gemini-web-pro-image","prompt":"Generate a cat on a windowsill","aspect_ratio":"9:16","n":1,"response_format":"b64_json"}'
 ```
+
+### Multiple accounts
+
+Use [accounts.example.json](accounts.example.json) as a template and store the real
+configuration outside version control:
+
+```bash
+unset GEMINI_BRIDGE_COOKIES
+export GEMINI_BRIDGE_ACCOUNTS=/absolute/path/to/accounts.local.json
+uv run --no-dev --extra server python -m gemini_webapi.server
+```
+
+Paths in the accounts file are relative to that file, or can be absolute. Each enabled
+entry needs a unique `id`, a `cookies_file`, and its own `cache_dir`. Set `enabled: false`
+to exclude an entry. Configuration is loaded only at startup; after replacing cookies
+or changing accounts, restart the service. A matching cache takes precedence over the
+cookie file: for a deliberate account/session replacement, use a fresh private cache
+directory so old cached credentials do not shadow the new session.
+
+Duplicate IDs, repeated PSID credentials and shared cache directories are rejected.
+Different browser sessions of the same Google account cannot be identified reliably
+from these fields alone; provide distinct Google accounts, not multiple sessions of
+one account. Each client has its own cookie jar, refresh task and explicit cache path;
+the service never changes `GEMINI_COOKIE_PATH` between requests and never reads local
+browser cookies. Cache directories are restricted to owner access and cache files
+are written with owner read/write permissions. Protect the input cookie files as well.
+
+Authenticated `GET /v1/accounts` returns only configured IDs and states (`idle`, `busy`,
+`paused`); no cookies, emails or paths are exposed. Initialization failures, detected
+authentication failures and quota errors pause that account until restart. Other
+available accounts continue to process new requests. Runtime transport errors and
+timeouts fail the current request without resubmission; the client is closed and may
+be initialized for a later request. When no account remains available, new and queued
+unsubmitted requests receive 503. A paused account is not automatically retried or
+rotated back into the pool. Background session changes may only be detected at the
+next request; this is not a continuous account-health or quota monitor.
 
 Authenticated `GET /v1/models` lists `gemini-web-image` (default image mode) and
 `gemini-web-pro-image` (Pro requested). These are service aliases, not official
@@ -73,10 +109,11 @@ Other fields, pixel sizes, edits, reference images, masks, and output format /
 quality controls return HTTP 400; nothing is silently converted to a supported
 size. This is a limited OpenAI-style endpoint, not full API compatibility.
 
-One worker executes requests serially, with up to four waiting requests; a full
-queue returns 429 without submitting generation. The active request has a
+Each available account has one worker and processes one request at a time. Workers
+consume a shared queue, so different accounts can generate concurrently. The queue
+holds up to four waiting requests in total; a full queue returns 429 without submission. The active request has a
 300-second budget including initialization, generation and download; queue wait
-is additional. Timeouts return 504; upstream or download failures and text-only
+is additional. Initialization failures before generation return 503. Generation timeouts return 504; upstream or download failures and text-only
 results return 502. Errors use an `error` object and do not expose upstream
 credentials or raw responses. Only the first generated image is returned.
 
@@ -91,12 +128,14 @@ Offline checks (no Google credentials required):
 
 ```bash
 uv sync --no-dev --extra server --extra dev
-PYTHONPATH=src:tests uv run --no-dev --extra server --extra dev python -m unittest test_image_server test_pro_image test_image_aspect_ratio
+PYTHONPATH=src:tests uv run --no-dev --extra server --extra dev python -m unittest test_multi_account test_image_server test_pro_image test_image_aspect_ratio
 ```
 
-Run only one process/worker for this account and cookie cache. This version has
-no HTTP administration UI or account pool. CPA integration has not yet been
-validated, and callers must use this supported parameter subset. Before exposing
+Run only one service process (one Uvicorn worker) for a given account pool. Do not
+share its accounts/cache with another running instance. This version has no HTTP
+administration UI, account-upload API, weights or quota prediction. Single-account
+CPA v8.0.38 forwarding has been locally verified; the multi-account service keeps
+the same image contract. Callers must use this supported parameter subset. Before exposing
 a modified service to network users, provide access to its corresponding source
 as required by AGPL section 13.
 

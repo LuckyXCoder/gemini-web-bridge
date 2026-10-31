@@ -1,0 +1,16 @@
+{
+  "accounts": [
+    {
+      "id": "account-a",
+      "cookies_file": "secrets/account-a.cookies.json",
+      "cache_dir": "state/account-a",
+      "enabled": true
+    },
+    {
+      "id": "account-b",
+      "cookies_file": "secrets/account-b.cookies.json",
+      "cache_dir": "state/account-b",
+      "enabled": true
+    }
+  ]
+}
