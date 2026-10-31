@@ -33,6 +33,73 @@ uv sync --no-dev
 
 The Python import remains `gemini_webapi`. This repository has no separately published PyPI release; `pip install gemini-webapi` installs the upstream package, not these maintenance changes. The inherited badges and upstream installation examples below refer to the original project. Browser-cookie extraction is optional; the command above does not install its dependency.
 
+## Optional local HTTP service (single account)
+
+Install the optional server dependencies without browser-cookie extraction:
+
+```bash
+uv sync --no-dev --extra server
+export GEMINI_BRIDGE_COOKIES=/absolute/path/to/cookies.json
+export GEMINI_COOKIE_PATH=/absolute/path/to/private-cookie-cache
+export GEMINI_BRIDGE_API_KEY='choose-a-private-service-key'
+# Optional proxy for Google requests:
+export GEMINI_PROXY=http://127.0.0.1:10808
+uv run --no-dev --extra server python -m gemini_webapi.server
+```
+
+The service binds to `127.0.0.1:18088` and requires a signed-in, available account at
+startup. Cookie JSON may be a name/value object or `{ "cookies": { ... } }` and must
+contain `__Secure-1PSID`. Keep the cookie file and cache private. The API key above
+is a separate service credential; never send Google cookies to callers.
+
+```bash
+curl http://127.0.0.1:18088/v1/images/generations \
+  -H "Authorization: Bearer $GEMINI_BRIDGE_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gemini-web-pro-image","prompt":"Generate a cat on a windowsill","aspect_ratio":"9:16","n":1,"response_format":"b64_json"}'
+```
+
+Authenticated `GET /v1/models` lists `gemini-web-image` (default image mode) and
+`gemini-web-pro-image` (Pro requested). These are service aliases, not official
+Google model IDs. The chat model defaults to `gemini-pro` and can be set using
+`GEMINI_BRIDGE_CHAT_MODEL`.
+
+Responses follow the OpenAI image JSON shape: `created` and `data[].b64_json`.
+The service downloads and validates a generated image before returning it; it does
+not return web-search images or treat text-only replies as success. Bytes retain
+their original format. Only `n=1`, `response_format="b64_json"`, `size="auto"`
+(or omitted), and the documented native `aspect_ratio` values are supported.
+Other fields, pixel sizes, edits, reference images, masks, and output format /
+quality controls return HTTP 400; nothing is silently converted to a supported
+size. This is a limited OpenAI-style endpoint, not full API compatibility.
+
+One worker executes requests serially, with up to four waiting requests; a full
+queue returns 429 without submitting generation. The active request has a
+300-second budget including initialization, generation and download; queue wait
+is additional. Timeouts return 504; upstream or download failures and text-only
+results return 502. Errors use an `error` object and do not expose upstream
+credentials or raw responses. Only the first generated image is returned.
+
+The service bypasses the SDK generation retry decorator. It does not automatically
+resubmit failed generations. A timeout or client disconnect does not prove that
+Google stopped processing; the worker retains its slot until completion or timeout,
+and disconnected results are not persisted. There is no task polling, idempotency
+store or automatic failover in this MVP. Client/CPA retries can still create a new
+generation and should be disabled for uncertain failures.
+
+Offline checks (no Google credentials required):
+
+```bash
+uv sync --no-dev --extra server --extra dev
+PYTHONPATH=src:tests uv run --no-dev --extra server --extra dev python -m unittest test_image_server test_pro_image test_image_aspect_ratio
+```
+
+Run only one process/worker for this account and cookie cache. This version has
+no HTTP administration UI or account pool. CPA integration has not yet been
+validated, and callers must use this supported parameter subset. Before exposing
+a modified service to network users, provide access to its corresponding source
+as required by AGPL section 13.
+
 ## License and attribution
 
 This derivative is distributed under the **GNU Affero General Public License v3.0**; see the unchanged [LICENSE](LICENSE). Original copyright, license and attribution notices are retained, together with upstream Git history. Maintenance changes by LuckyXCoder are documented above and in Git history. For modified versions offered over a network, comply with the corresponding-source obligations in section 13. The software license does not grant access to Google services or override their terms.

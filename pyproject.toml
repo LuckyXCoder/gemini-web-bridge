@@ -26,8 +26,9 @@ dependencies = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
+server = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1", "pillow>=11,<13"]
 browser = ["browser-cookie3"]
-dev = ["pyright", "ruff", "ty"]
+dev = ["pyright", "ruff", "ty", "httpx>=0.28,<1"]
 
 [dependency-groups]
 dev = [
