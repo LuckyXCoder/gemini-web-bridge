@@ -90,6 +90,8 @@ from .utils import (
     upload_file,
 )
 
+_SUPPORTED_IMAGE_ASPECT_RATIOS = ("1:1", "9:16", "16:9", "3:4", "4:3", "2:3", "21:9", "1:8", "8:1")
+
 
 class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
     """Async requests client interface for gemini.google.com.
@@ -1162,6 +1164,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
         deep_research: bool = False,
         extended_thinking: bool = False,
         pro_image: bool = False,
+        aspect_ratio: str | None = None,
         **kwargs,
     ) -> ModelOutput:
         """Generates contents with prompt.
@@ -1192,6 +1195,10 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
         pro_image: `bool`, optional
             Request Nano Banana Pro image generation. Requires an eligible signed-in account.
             This selects the image mode independently of the conversation model.
+        aspect_ratio: `str | None`, optional
+            Native image aspect ratio: "1:1", "9:16", "16:9", "3:4", "4:3",
+            "2:3", "21:9", "1:8", or "8:1".
+            None preserves the default ratio. Output dimensions are selected by Google.
         kwargs: `dict`, optional
             Additional arguments which will be passed to the post request.
             Refer to `curl_cffi.requests.AsyncSession.request` for more information.
@@ -1217,10 +1224,16 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
         if self.auto_close:
             await self.reset_close_task()
 
+        if aspect_ratio is not None and aspect_ratio not in _SUPPORTED_IMAGE_ASPECT_RATIOS:
+            raise ValueError(
+                f"aspect_ratio must be one of: {', '.join(_SUPPORTED_IMAGE_ASPECT_RATIOS)}."
+            )
+        if aspect_ratio is not None and deep_research:
+            raise ValueError("aspect_ratio and deep_research cannot be combined.")
         if pro_image and deep_research:
             raise ValueError("pro_image and deep_research cannot be combined.")
 
-        if any([files, gem, deep_research, pro_image]):
+        if any([files, gem, deep_research, pro_image, aspect_ratio]):
             self._check_account_status(raise_error=True)
 
         file_data = None
@@ -1262,6 +1275,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
                 deep_research=deep_research,
                 extended_thinking=extended_thinking,
                 pro_image=pro_image,
+                aspect_ratio=aspect_ratio,
                 **kwargs,
             ):
                 output = chunk
@@ -1292,6 +1306,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
         deep_research: bool = False,
         extended_thinking: bool = False,
         pro_image: bool = False,
+        aspect_ratio: str | None = None,
         **kwargs,
     ) -> AsyncGenerator[ModelOutput, None]:
         """Generates contents with prompt in streaming mode.
@@ -1324,6 +1339,10 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
         pro_image: `bool`, optional
             Request Nano Banana Pro image generation. Requires an eligible signed-in account.
             This selects the image mode independently of the conversation model.
+        aspect_ratio: `str | None`, optional
+            Native image aspect ratio: "1:1", "9:16", "16:9", "3:4", "4:3",
+            "2:3", "21:9", "1:8", or "8:1".
+            None preserves the default ratio. Output dimensions are selected by Google.
         kwargs: `dict`, optional
             Additional arguments passed to `curl_cffi.requests.AsyncSession.stream`.
 
@@ -1344,10 +1363,16 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
         if self.auto_close:
             await self.reset_close_task()
 
+        if aspect_ratio is not None and aspect_ratio not in _SUPPORTED_IMAGE_ASPECT_RATIOS:
+            raise ValueError(
+                f"aspect_ratio must be one of: {', '.join(_SUPPORTED_IMAGE_ASPECT_RATIOS)}."
+            )
+        if aspect_ratio is not None and deep_research:
+            raise ValueError("aspect_ratio and deep_research cannot be combined.")
         if pro_image and deep_research:
             raise ValueError("pro_image and deep_research cannot be combined.")
 
-        if any([files, gem, deep_research, pro_image]):
+        if any([files, gem, deep_research, pro_image, aspect_ratio]):
             self._check_account_status(raise_error=True)
 
         file_data = None
@@ -1389,6 +1414,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
                 deep_research=deep_research,
                 extended_thinking=extended_thinking,
                 pro_image=pro_image,
+                aspect_ratio=aspect_ratio,
                 **kwargs,
             ):
                 yield output
@@ -1416,6 +1442,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
         deep_research: bool = False,
         extended_thinking: bool = False,
         pro_image: bool = False,
+        aspect_ratio: str | None = None,
         **kwargs,
     ) -> AsyncGenerator[ModelOutput, None]:
         """Internal method which actually sends content generation requests.
@@ -1492,9 +1519,12 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
             0,
         ]
 
-        if pro_image:
-            # Web image-mode selector; keep the dynamic conversation model unchanged.
-            message_content.extend([None, None, [None] * 6 + [[None, [1]]]])
+        if pro_image or aspect_ratio is not None:
+            # Compose both options in one native image-mode field.
+            image_options = [1 if pro_image else None]
+            if aspect_ratio is not None:
+                image_options.append(aspect_ratio)
+            message_content.extend([None, None, [None] * 6 + [[None, image_options]]])
 
         params: dict[str, Any] = {"hl": self.language, "_reqid": _reqid, "rt": "c"}
         if self.build_label:
@@ -1526,9 +1556,10 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
                     inner_req_list[TEMPORARY_CHAT_FLAG_INDEX] = 1
                 if deep_research:
                     inner_req_list[49] = 1
+                if pro_image or aspect_ratio is not None:
+                    inner_req_list[49] = 14
                 if pro_image:
                     inner_req_list[32] = 1
-                    inner_req_list[49] = 14
                     inner_req_list[72] = 7
                 inner_req_list[53] = 0
                 if deep_research:
@@ -2497,6 +2528,7 @@ class ChatSession:
         deep_research: bool = False,
         extended_thinking: bool = False,
         pro_image: bool = False,
+        aspect_ratio: str | None = None,
         **kwargs,
     ) -> ModelOutput:
         """Generates contents with prompt.
@@ -2519,6 +2551,10 @@ class ChatSession:
         pro_image: `bool`, optional
             Request Nano Banana Pro image generation. Requires an eligible signed-in account.
             This selects the image mode independently of the conversation model.
+        aspect_ratio: `str | None`, optional
+            Native image aspect ratio: "1:1", "9:16", "16:9", "3:4", "4:3",
+            "2:3", "21:9", "1:8", or "8:1".
+            None preserves the default ratio. Output dimensions are selected by Google.
         kwargs: `dict`, optional
             Additional arguments which will be passed to the post request.
             Refer to `curl_cffi.requests.AsyncSession.request` for more information.
@@ -2551,6 +2587,7 @@ class ChatSession:
             deep_research=deep_research,
             extended_thinking=extended_thinking,
             pro_image=pro_image,
+            aspect_ratio=aspect_ratio,
             **kwargs,
         )
 
@@ -2562,6 +2599,7 @@ class ChatSession:
         deep_research: bool = False,
         extended_thinking: bool = False,
         pro_image: bool = False,
+        aspect_ratio: str | None = None,
         **kwargs,
     ) -> AsyncGenerator[ModelOutput, None]:
         """Generates contents with prompt in streaming mode within this chat session.
@@ -2586,6 +2624,10 @@ class ChatSession:
         pro_image: `bool`, optional
             Request Nano Banana Pro image generation. Requires an eligible signed-in account.
             This selects the image mode independently of the conversation model.
+        aspect_ratio: `str | None`, optional
+            Native image aspect ratio: "1:1", "9:16", "16:9", "3:4", "4:3",
+            "2:3", "21:9", "1:8", or "8:1".
+            None preserves the default ratio. Output dimensions are selected by Google.
         kwargs: `dict`, optional
             Additional arguments passed to the streaming request.
 
@@ -2605,6 +2647,7 @@ class ChatSession:
             deep_research=deep_research,
             extended_thinking=extended_thinking,
             pro_image=pro_image,
+            aspect_ratio=aspect_ratio,
             **kwargs,
         ):
             yield output
