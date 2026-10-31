@@ -90,6 +90,8 @@ from .utils import (
     upload_file,
 )
 
+_SUPPORTED_IMAGE_ASPECT_RATIOS = ("1:1", "9:16", "16:9", "3:4", "4:3", "2:3", "21:9", "1:8", "8:1")
+
 
 class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
     """Async requests client interface for gemini.google.com.
@@ -1190,7 +1192,8 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
         extended_thinking: `bool`, optional
             If set to `True`, will enable extended thinking mode, default to standard.
         aspect_ratio: `str | None`, optional
-            Native image aspect ratio: "1:1", "9:16", "3:4", "4:3", or "16:9".
+            Native image aspect ratio: "1:1", "9:16", "16:9", "3:4", "4:3",
+            "2:3", "21:9", "1:8", or "8:1".
             None preserves the default generation mode. Output dimensions are selected by Google.
         kwargs: `dict`, optional
             Additional arguments which will be passed to the post request.
@@ -1215,8 +1218,10 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
 
         """
         if aspect_ratio is not None:
-            if aspect_ratio not in ("1:1", "9:16", "3:4", "4:3", "16:9"):
-                raise ValueError("aspect_ratio must be one of: 1:1, 9:16, 3:4, 4:3, 16:9.")
+            if aspect_ratio not in _SUPPORTED_IMAGE_ASPECT_RATIOS:
+                raise ValueError(
+                    f"aspect_ratio must be one of: {', '.join(_SUPPORTED_IMAGE_ASPECT_RATIOS)}."
+                )
             if deep_research:
                 raise ValueError("aspect_ratio and deep_research cannot be combined.")
 
@@ -1325,7 +1330,8 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
         extended_thinking: `bool`, optional
             If set to `True`, will enable extended thinking mode, default to standard.
         aspect_ratio: `str | None`, optional
-            Native image aspect ratio: "1:1", "9:16", "3:4", "4:3", or "16:9".
+            Native image aspect ratio: "1:1", "9:16", "16:9", "3:4", "4:3",
+            "2:3", "21:9", "1:8", or "8:1".
             None preserves the default generation mode. Output dimensions are selected by Google.
         kwargs: `dict`, optional
             Additional arguments passed to `curl_cffi.requests.AsyncSession.stream`.
@@ -1345,8 +1351,10 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
 
         """
         if aspect_ratio is not None:
-            if aspect_ratio not in ("1:1", "9:16", "3:4", "4:3", "16:9"):
-                raise ValueError("aspect_ratio must be one of: 1:1, 9:16, 3:4, 4:3, 16:9.")
+            if aspect_ratio not in _SUPPORTED_IMAGE_ASPECT_RATIOS:
+                raise ValueError(
+                    f"aspect_ratio must be one of: {', '.join(_SUPPORTED_IMAGE_ASPECT_RATIOS)}."
+                )
             if deep_research:
                 raise ValueError("aspect_ratio and deep_research cannot be combined.")
 
@@ -2521,7 +2529,8 @@ class ChatSession:
         extended_thinking: `bool`, optional
             If set to `True`, will enable extended thinking mode, default to standard.
         aspect_ratio: `str | None`, optional
-            Native image aspect ratio: "1:1", "9:16", "3:4", "4:3", or "16:9".
+            Native image aspect ratio: "1:1", "9:16", "16:9", "3:4", "4:3",
+            "2:3", "21:9", "1:8", or "8:1".
             None preserves the default generation mode. Output dimensions are selected by Google.
         kwargs: `dict`, optional
             Additional arguments which will be passed to the post request.
@@ -2588,7 +2597,8 @@ class ChatSession:
         extended_thinking: `bool`, optional
             If set to `True`, will enable extended thinking mode, default to standard.
         aspect_ratio: `str | None`, optional
-            Native image aspect ratio: "1:1", "9:16", "3:4", "4:3", or "16:9".
+            Native image aspect ratio: "1:1", "9:16", "16:9", "3:4", "4:3",
+            "2:3", "21:9", "1:8", or "8:1".
             None preserves the default generation mode. Output dimensions are selected by Google.
         kwargs: `dict`, optional
             Additional arguments passed to the streaming request.

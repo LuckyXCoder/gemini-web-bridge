@@ -556,8 +556,10 @@ response = await client.generate_content(
 )
 ```
 
-Supported values match the web image menu: `"1:1"`, `"9:16"`, `"3:4"`, `"4:3"`, and
-`"16:9"`. This selects image generation and requires a signed-in account with image access.
+Supported values are `"1:1"`, `"9:16"`, `"16:9"`, `"3:4"`, `"4:3"`, `"2:3"`,
+`"21:9"`, `"1:8"`, and `"8:1"`. These include the web menu options and additional
+ratios verified through native web requests. Arbitrary ratios such as `"7:13"`
+are not supported. This selects image generation and requires a signed-in account with image access.
 Omit the argument (or pass `None`) to preserve the existing generation behavior.
 The ratio is sent as a native option without modifying the prompt or resizing the result;
 Google chooses the actual pixel dimensions, which may only approximate the requested ratio.

@@ -98,14 +98,26 @@ class TestImageAspectRatio(unittest.IsolatedAsyncioTestCase):
                     await client.generate_content("cat", aspect_ratio="16:9", deep_research=True)
 
     async def test_all_supported_ratios(self):
-        for ratio in ("1:1", "9:16", "3:4", "4:3", "16:9"):
+        for ratio in ("1:1", "9:16", "16:9", "3:4", "4:3", "2:3", "21:9", "1:8", "8:1"):
             with self.subTest(ratio=ratio):
                 request = await self.capture(aspect_ratio=ratio)
                 self.assertEqual(request["body"][0][9][6][1], [None, ratio])
 
     async def test_invalid_ratio_before_network(self):
         client = GeminiClient()
-        for ratio in ("", "auto", "2:1", "16/9", "16:9 "):
+        for ratio in (
+            "",
+            "auto",
+            "7:13",
+            "2:1",
+            "3:2",
+            "4:5",
+            "5:4",
+            "1:4",
+            "4:1",
+            "16/9",
+            "16:9 ",
+        ):
             for streaming in (False, True):
                 with self.subTest(ratio=ratio, streaming=streaming), self.assertRaises(ValueError):
                     if streaming:
