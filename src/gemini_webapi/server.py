@@ -6,8 +6,9 @@ import hmac
 import os
 import sys
 import time
+from collections import deque
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal
@@ -70,6 +71,10 @@ class Account:
     id: str
     client: object
     status: str = "starting"
+    enabled: bool = True
+    recent: deque = field(default_factory=lambda: deque(maxlen=10))
+    last_checked_at: float | None = None
+    task: asyncio.Task | None = None
 
 
 class AccountConfig(BaseModel):
@@ -80,7 +85,7 @@ class AccountConfig(BaseModel):
     enabled: bool = True
 
 
-def load_accounts():
+def load_accounts(allow_empty=False):
     """Read account files once; never mutate process-wide cache settings."""
     config_path = os.environ.get("GEMINI_BRIDGE_ACCOUNTS")
     cookie_path = os.environ.get("GEMINI_BRIDGE_COOKIES")
@@ -111,7 +116,7 @@ def load_accounts():
                 cookies = (path.parent / Path(entry.cookies_file).expanduser()).resolve()
                 cache = (path.parent / Path(entry.cache_dir).expanduser()).resolve()
                 specs.append((entry.id, cookies, cache))
-    if not specs:
+    if not specs and not allow_empty:
         raise ValueError("At least one enabled account is required")
     accounts = []
     seen_psids = set()
@@ -160,15 +165,30 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
         raise ValueError("GEMINI_BRIDGE_API_KEY is required")
     if timeout <= 0 or queue_size < 1:
         raise ValueError("timeout and queue_size must be positive")
+    admin_key = os.environ.get("GEMINI_BRIDGE_ADMIN_KEY")
+    admin_path = os.environ.get("GEMINI_BRIDGE_ACCOUNTS")
+    if admin_key:
+        if admin_key == key:
+            raise ValueError("Administrator and service keys must differ")
+        if not admin_path or os.environ.get("GEMINI_BRIDGE_COOKIES"):
+            raise ValueError("Admin mode requires GEMINI_BRIDGE_ACCOUNTS only")
+        if not Path(admin_path).expanduser().exists():
+            from .admin import write_private_json
+
+            write_private_json(Path(admin_path).expanduser(), {"accounts": []})
     if client is not None and accounts is not None:
         raise ValueError("Pass client or accounts, not both")
     pool = (
         accounts
         if accounts is not None
-        else ([Account("default", client)] if client is not None else load_accounts())
+        else (
+            [Account("default", client)]
+            if client is not None
+            else load_accounts(allow_empty=bool(admin_key))
+        )
     )
     if (
-        not pool
+        (not pool and not admin_key)
         or len({a.id for a in pool}) != len(pool)
         or len({id(a.client) for a in pool}) != len(pool)
     ):
@@ -176,13 +196,18 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
     chat_model = os.environ.get("GEMINI_BRIDGE_CHAT_MODEL", "gemini-pro")
 
     async def initialize(account):
+        was_running = getattr(account.client, "_running", False)
         await account.client.init(
             timeout=timeout, auto_close=False, auto_refresh=True, verbose=False
         )
+        if not was_running:
+            account.last_checked_at = time.time()
         if not account.client.access_token or not account.client._check_account_status():
             raise AuthError("Gemini account is not authenticated or available")
 
     async def close(account):
+        if account.client is None:
+            return
         try:
             await account.client.close()
         except Exception:
@@ -191,7 +216,7 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
             logger.warning("Account {} cleanup failed; paused", account.id)
 
     def available():
-        return any(a.status in ("idle", "busy") for a in pool)
+        return any(a.enabled and a.status in ("idle", "busy") for a in pool)
 
     def drain_unavailable(queue):
         if available():
@@ -209,20 +234,26 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
             queue.task_done()
 
     async def worker(account, queue):
-        while account.status != "paused":
+        while account.enabled and account.status != "paused":
             request, future = await queue.get()
             initialized = False
+            started = None
+            outcome = "failed"
+            failure = None
             try:
                 if future.cancelled():
                     continue
                 account.status = "busy"
+                started = time.time()
                 async with asyncio.timeout(timeout):
                     await initialize(account)
                     initialized = True
                     result = await generate_image(account.client, request, chat_model)
+                outcome = "success"
                 if not future.done():
                     future.set_result(result)
             except asyncio.CancelledError:
+                failure = "service_stopping"
                 if not future.done():
                     future.set_result(
                         error_response(
@@ -233,6 +264,14 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
                     )
                 raise
             except Exception as exc:
+                if not initialized:
+                    failure = "account_unavailable"
+                elif isinstance(exc, (AuthError,)) or getattr(exc, "status_code", None) == 401:
+                    failure = "authentication_failed"
+                elif isinstance(exc, UsageLimitExceededError):
+                    failure = "quota_exceeded"
+                else:
+                    failure = "timeout" if isinstance(exc, TimeoutError) else "upstream_failure"
                 if (
                     not initialized
                     or isinstance(exc, (AuthError, UsageLimitExceededError))
@@ -262,12 +301,27 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
                     future.set_result(result)
                 await close(account)
             finally:
+                if started is not None:
+                    account.recent.append(
+                        {
+                            "time": started,
+                            "success": outcome == "success",
+                            "duration": round(time.time() - started, 2),
+                            "error": failure,
+                        }
+                    )
                 if account.status != "paused":
                     account.status = "idle"
                 queue.task_done()
                 drain_unavailable(queue)
+            if not account.enabled:
+                await close(account)
+                account.status = "disabled"
 
     async def start_account(account):
+        if not account.enabled:
+            account.status = "disabled"
+            return
         try:
             async with asyncio.timeout(timeout):
                 await initialize(account)
@@ -277,20 +331,29 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
             await close(account)
             logger.warning("Account {} initialization failed; paused", account.id)
 
+    tasks = set()
+
+    def spawn(account):
+        account.task = asyncio.create_task(worker(account, app.state.queue))
+        tasks.add(account.task)
+        account.task.add_done_callback(tasks.discard)
+
     @asynccontextmanager
     async def lifespan(app):
         queue = asyncio.Queue(maxsize=queue_size)
         app.state.queue = queue
         app.state.accounts = pool
-        tasks = []
         try:
             await asyncio.gather(*(start_account(a) for a in pool))
-            tasks = [asyncio.create_task(worker(a, queue)) for a in pool if a.status == "idle"]
+            for account in pool:
+                if account.enabled and account.status == "idle":
+                    spawn(account)
             yield
         finally:
-            for task in tasks:
+            pending = list(tasks)
+            for task in pending:
                 task.cancel()
-            for task in tasks:
+            for task in pending:
                 with suppress(asyncio.CancelledError):
                     await task
             for account in pool:
@@ -325,7 +388,7 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
         return error_response(
             400,
             "invalid_request",
-            "Unsupported or invalid image parameters. See the service documentation.",
+            "Unsupported or invalid request parameters. See the service documentation.",
         )
 
     @app.get("/v1/models", dependencies=[Depends(authorize)])
@@ -370,6 +433,12 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
             future.cancel()
             raise
 
+    if admin_key:
+        from .admin import register_admin
+
+        register_admin(
+            app, pool, admin_path, admin_key, initialize, close, spawn, drain_unavailable
+        )
     return app
 
 
@@ -384,4 +453,9 @@ if __name__ == "__main__":
 
     logger.remove()
     logger.add(sys.stderr, level="WARNING")
-    uvicorn.run(create_app(), host="127.0.0.1", port=18088, workers=1)
+    uvicorn.run(
+        create_app(),
+        host=os.environ.get("GEMINI_BRIDGE_HOST", "127.0.0.1"),
+        port=int(os.environ.get("GEMINI_BRIDGE_PORT", "18088")),
+        workers=1,
+    )

@@ -59,6 +59,62 @@ curl http://127.0.0.1:18088/v1/images/generations \
   -d '{"model":"gemini-web-pro-image","prompt":"Generate a cat on a windowsill","aspect_ratio":"9:16","n":1,"response_format":"b64_json"}'
 ```
 
+### Administrator API (optional)
+
+Set a **different** administrator key to enable management. The generation API key
+cannot access these endpoints. Use a private, writable accounts file; if it does not
+exist, admin mode creates an empty one so the first account can be added dynamically.
+
+```bash
+unset GEMINI_BRIDGE_COOKIES
+export GEMINI_BRIDGE_ACCOUNTS=/absolute/private/path/accounts.local.json
+export GEMINI_BRIDGE_API_KEY='your-generation-service-key'
+export GEMINI_BRIDGE_ADMIN_KEY='a-different-long-random-administrator-key'
+uv run --no-dev --extra server python -m gemini_webapi.server
+```
+
+All management requests require `Authorization: Bearer <administrator-key>`:
+
+| Method / path | Purpose |
+| --- | --- |
+| `GET /admin/api/accounts` | IDs, enabled flags, runtime state, last login-check time, last ten request outcomes, queue depth |
+| `POST /admin/api/accounts` | Validate and add an account without restarting |
+| `PUT /admin/api/accounts/{id}/cookies` | Validate replacement cookies and replace an idle account client |
+| `PUT /admin/api/accounts/{id}/enabled` | Enable/resume with login validation, or disable new work |
+
+Add-account JSON (place actual credentials only in a private local file or protected
+client, not shell history):
+
+```json
+{"id":"account-c","secure_1psid":"COOKIE_VALUE","secure_1psidts":"COOKIE_VALUE"}
+```
+
+Cookie replacement takes the same body without `id`; enable/disable takes
+`{"enabled":true}` or `{"enabled":false}`. IDs allow letters, numbers, underscores
+and hyphens. Credentials are write-only and never returned. Validation does not
+generate an image. A failed validation leaves existing configuration and clients intact.
+
+Disabling a busy account immediately prevents new assignments while its current
+request finishes. Updating cookies on a busy account returns 409; retry the update
+after completion. Replacement uses a fresh cache directory to avoid stale-cookie
+shadowing. Managed credential files and the accounts file are written with 0600
+permissions using atomic file replacement. Old private credential/cache directories
+are retained for recovery; they are not deleted automatically. Keep the configuration
+parent directory private and persistent, and do not manually edit the accounts file
+while management is running. Configuration is managed by one service process only.
+
+Recent request records contain timestamp, elapsed seconds, success/failure and a
+generic error code. They exclude prompts and secrets, retain only ten per account,
+and are cleared on restart. Runtime state and the last check timestamp are not a
+continuous guarantee that Google still accepts the session. Management endpoints
+are not registered unless the administrator key is set. No UI, YAML editor, account
+deletion or service-key management is included in this backend MVP.
+
+The service binds to loopback by default. `GEMINI_BRIDGE_HOST` and
+`GEMINI_BRIDGE_PORT` can override the bind address/port for controlled deployments.
+Keep management local or behind an SSH tunnel; do not expose plain HTTP credentials
+on an untrusted network.
+
 ### Multiple accounts
 
 Use [accounts.example.json](accounts.example.json) as a template and store the real
@@ -72,8 +128,8 @@ uv run --no-dev --extra server python -m gemini_webapi.server
 
 Paths in the accounts file are relative to that file, or can be absolute. Each enabled
 entry needs a unique `id`, a `cookies_file`, and its own `cache_dir`. Set `enabled: false`
-to exclude an entry. Configuration is loaded only at startup; after replacing cookies
-or changing accounts, restart the service. A matching cache takes precedence over the
+to exclude an entry. Manual file configuration is loaded at startup; after editing it, restart the service.
+When the optional administrator API is enabled, use its endpoints for dynamic changes. A matching cache takes precedence over the
 cookie file: for a deliberate account/session replacement, use a fresh private cache
 directory so old cached credentials do not shadow the new session.
 
@@ -128,12 +184,12 @@ Offline checks (no Google credentials required):
 
 ```bash
 uv sync --no-dev --extra server --extra dev
-PYTHONPATH=src:tests uv run --no-dev --extra server --extra dev python -m unittest test_multi_account test_image_server test_pro_image test_image_aspect_ratio
+PYTHONPATH=src:tests uv run --no-dev --extra server --extra dev python -m unittest test_admin test_multi_account test_image_server test_pro_image test_image_aspect_ratio
 ```
 
 Run only one service process (one Uvicorn worker) for a given account pool. Do not
-share its accounts/cache with another running instance. This version has no HTTP
-administration UI, account-upload API, weights or quota prediction. Single-account
+share its accounts/cache with another running instance. This version has no administration UI, weights or quota prediction; the optional
+administrator API handles account addition and cookie replacement. Single-account
 CPA v8.0.38 forwarding has been locally verified; the multi-account service keeps
 the same image contract. Callers must use this supported parameter subset. Before exposing
 a modified service to network users, provide access to its corresponding source
