@@ -1161,6 +1161,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
         temporary: bool = False,
         deep_research: bool = False,
         extended_thinking: bool = False,
+        aspect_ratio: str | None = None,
         **kwargs,
     ) -> ModelOutput:
         """Generates contents with prompt.
@@ -1188,6 +1189,9 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
             If set to `True`, will enable deep research mode and start creating a deep research plan.
         extended_thinking: `bool`, optional
             If set to `True`, will enable extended thinking mode, default to standard.
+        aspect_ratio: `str | None`, optional
+            Native image aspect ratio: "1:1", "9:16", "3:4", "4:3", or "16:9".
+            None preserves the default generation mode. Output dimensions are selected by Google.
         kwargs: `dict`, optional
             Additional arguments which will be passed to the post request.
             Refer to `curl_cffi.requests.AsyncSession.request` for more information.
@@ -1210,10 +1214,16 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
             - If response structure is invalid and failed to parse.
 
         """
+        if aspect_ratio is not None:
+            if aspect_ratio not in ("1:1", "9:16", "3:4", "4:3", "16:9"):
+                raise ValueError("aspect_ratio must be one of: 1:1, 9:16, 3:4, 4:3, 16:9.")
+            if deep_research:
+                raise ValueError("aspect_ratio and deep_research cannot be combined.")
+
         if self.auto_close:
             await self.reset_close_task()
 
-        if any([files, gem, deep_research]):
+        if any([files, gem, deep_research, aspect_ratio]):
             self._check_account_status(raise_error=True)
 
         file_data = None
@@ -1254,6 +1264,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
                 session_state=session_state,
                 deep_research=deep_research,
                 extended_thinking=extended_thinking,
+                aspect_ratio=aspect_ratio,
                 **kwargs,
             ):
                 output = chunk
@@ -1283,6 +1294,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
         temporary: bool = False,
         deep_research: bool = False,
         extended_thinking: bool = False,
+        aspect_ratio: str | None = None,
         **kwargs,
     ) -> AsyncGenerator[ModelOutput, None]:
         """Generates contents with prompt in streaming mode.
@@ -1312,6 +1324,9 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
             If set to `True`, will enable deep research mode and start creating a deep research plan.
         extended_thinking: `bool`, optional
             If set to `True`, will enable extended thinking mode, default to standard.
+        aspect_ratio: `str | None`, optional
+            Native image aspect ratio: "1:1", "9:16", "3:4", "4:3", or "16:9".
+            None preserves the default generation mode. Output dimensions are selected by Google.
         kwargs: `dict`, optional
             Additional arguments passed to `curl_cffi.requests.AsyncSession.stream`.
 
@@ -1329,10 +1344,16 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
             If the stream request times out.
 
         """
+        if aspect_ratio is not None:
+            if aspect_ratio not in ("1:1", "9:16", "3:4", "4:3", "16:9"):
+                raise ValueError("aspect_ratio must be one of: 1:1, 9:16, 3:4, 4:3, 16:9.")
+            if deep_research:
+                raise ValueError("aspect_ratio and deep_research cannot be combined.")
+
         if self.auto_close:
             await self.reset_close_task()
 
-        if any([files, gem, deep_research]):
+        if any([files, gem, deep_research, aspect_ratio]):
             self._check_account_status(raise_error=True)
 
         file_data = None
@@ -1373,6 +1394,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
                 session_state=session_state,
                 deep_research=deep_research,
                 extended_thinking=extended_thinking,
+                aspect_ratio=aspect_ratio,
                 **kwargs,
             ):
                 yield output
@@ -1399,6 +1421,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
         session_state: dict[str, Any] | None = None,
         deep_research: bool = False,
         extended_thinking: bool = False,
+        aspect_ratio: str | None = None,
         **kwargs,
     ) -> AsyncGenerator[ModelOutput, None]:
         """Internal method which actually sends content generation requests.
@@ -1475,6 +1498,10 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
             0,
         ]
 
+        if aspect_ratio is not None:
+            # Native image options, without selecting a Pro image model.
+            message_content.extend([None, None, [None] * 6 + [[None, [None, aspect_ratio]]]])
+
         params: dict[str, Any] = {"hl": self.language, "_reqid": _reqid, "rt": "c"}
         if self.build_label:
             params["bl"] = self.build_label
@@ -1505,6 +1532,8 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
                     inner_req_list[TEMPORARY_CHAT_FLAG_INDEX] = 1
                 if deep_research:
                     inner_req_list[49] = 1
+                if aspect_ratio is not None:
+                    inner_req_list[49] = 14
                 inner_req_list[53] = 0
                 if deep_research:
                     inner_req_list[54] = [[[[[1]]]]]
@@ -2471,6 +2500,7 @@ class ChatSession:
         temporary: bool = False,
         deep_research: bool = False,
         extended_thinking: bool = False,
+        aspect_ratio: str | None = None,
         **kwargs,
     ) -> ModelOutput:
         """Generates contents with prompt.
@@ -2490,6 +2520,9 @@ class ChatSession:
             If set to `True`, will enable deep research mode and start creating a deep research plan.
         extended_thinking: `bool`, optional
             If set to `True`, will enable extended thinking mode, default to standard.
+        aspect_ratio: `str | None`, optional
+            Native image aspect ratio: "1:1", "9:16", "3:4", "4:3", or "16:9".
+            None preserves the default generation mode. Output dimensions are selected by Google.
         kwargs: `dict`, optional
             Additional arguments which will be passed to the post request.
             Refer to `curl_cffi.requests.AsyncSession.request` for more information.
@@ -2521,6 +2554,7 @@ class ChatSession:
             temporary=temporary,
             deep_research=deep_research,
             extended_thinking=extended_thinking,
+            aspect_ratio=aspect_ratio,
             **kwargs,
         )
 
@@ -2531,6 +2565,7 @@ class ChatSession:
         temporary: bool = False,
         deep_research: bool = False,
         extended_thinking: bool = False,
+        aspect_ratio: str | None = None,
         **kwargs,
     ) -> AsyncGenerator[ModelOutput, None]:
         """Generates contents with prompt in streaming mode within this chat session.
@@ -2552,6 +2587,9 @@ class ChatSession:
             If set to `True`, will enable deep research mode and start creating a deep research plan.
         extended_thinking: `bool`, optional
             If set to `True`, will enable extended thinking mode, default to standard.
+        aspect_ratio: `str | None`, optional
+            Native image aspect ratio: "1:1", "9:16", "3:4", "4:3", or "16:9".
+            None preserves the default generation mode. Output dimensions are selected by Google.
         kwargs: `dict`, optional
             Additional arguments passed to the streaming request.
 
@@ -2570,6 +2608,7 @@ class ChatSession:
             temporary=temporary,
             deep_research=deep_research,
             extended_thinking=extended_thinking,
+            aspect_ratio=aspect_ratio,
             **kwargs,
         ):
             yield output
