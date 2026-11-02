@@ -9,6 +9,7 @@ import uuid
 from contextlib import suppress
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Literal
 
 import orjson
 from fastapi import Depends, Header, HTTPException
@@ -60,7 +61,12 @@ class Enabled(BaseModel):
     enabled: bool = Field(strict=True)
 
 
-def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, drain):
+class ImageTestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model: Literal["gemini-web-image", "gemini-web-pro-image"] = "gemini-web-image"
+
+
+def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, drain, test_image):
     from .server import Account, AccountConfig, SingleSubmissionClient
 
     lock = asyncio.Lock()
@@ -95,6 +101,7 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
                     "checking": a.checking,
                     "removing": a.removing,
                     "recent": list(a.recent),
+                    "image_test": a.image_test,
                 }
                 for a in pool
             ],
@@ -188,6 +195,10 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
     @app.get("/admin/api/accounts", dependencies=[Depends(authorize)])
     async def accounts():
         return snapshot()
+
+    @app.post("/admin/api/accounts/{account_id}/image-test", dependencies=[Depends(authorize)])
+    async def check_image(account_id: str, request: ImageTestRequest):
+        return await test_image(find(account_id), request.model)
 
     @app.post("/admin/api/accounts/{account_id}/check", dependencies=[Depends(authorize)])
     async def check_login(account_id: str):

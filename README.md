@@ -1178,3 +1178,22 @@ python cli.py --cookies-json cookies.json research get c_abc123 --output report.
     <a href="https://star-history.com/#HanaokaYuzu/Gemini-API">
         <img src="https://api.star-history.com/svg?repos=HanaokaYuzu/Gemini-API&type=Date" width="75%" alt="Star History Chart"></a>
 </p>
+
+### 指定账号生图验证
+
+管理页的“验证账号状态”只检查登录；“测试生图”使用选中账号生成一张固定
+1:1 橘猫测试图，可选普通或 Pro 模式，会消耗生图额度。
+管理接口：`POST /admin/api/accounts/{id}/image-test`，
+请求体 `{"model":"gemini-web-image"}` 或 `{"model":"gemini-web-pro-image"}`，
+使用独立管理员 Bearer Key。仅空闲、已启用账号可测试；忙碌、验证中、
+暂停、禁用或待删除账号返回 409。
+
+测试只提交一次，不切换账号。浏览器断开后服务仍保持该账号占用直到结束或
+超时，避免重复生成。返回 `image_test` 结果及成功时的 `image` 生图响应；
+列表仅保留最近一次测试的模式、状态、时间、耗时和错误分类，不保存图片。
+记录在服务重启或替换账号凭证后清空。Pro 表示请求模式，不代表额外核验
+Google 网页中的模型标签。
+
+生图失败会暂停该账号以避免继续接单，但仅明确认证失败才修改登录状态。
+超时无法保证上游未执行，不应立即重复提交。暂停账号可通过现有启用接口
+重新验证恢复，或更新凭证；批量验证不会提交生图。

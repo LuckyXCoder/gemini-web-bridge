@@ -421,3 +421,86 @@ class TestAdmin(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             json.loads(self.path.read_text())["accounts"][0]["display_name"], "new@example.com"
         )
+
+    async def test_image_test_targets_account_and_separates_login_status(self):
+        await self.add("a", "cookie-a")
+        await self.add("b", "cookie-b")
+        used = []
+
+        async def generate(client, request, model):
+            used.append((client.psid, request.model, request.n))
+            return {"data": [{"b64_json": "synthetic-image"}]}
+
+        with patch("gemini_webapi.server.generate_image", generate):
+            denied = await self.http.post(
+                "/admin/api/accounts/b/image-test",
+                json={},
+                headers={"Authorization": "Bearer service-test"},
+            )
+            self.assertEqual(denied.status_code, 401)
+            result = await self.http.post(
+                "/admin/api/accounts/b/image-test", json={"model": "gemini-web-pro-image"}
+            )
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(used, [("cookie-b", "gemini-web-pro-image", 1)])
+        self.assertEqual(result.json()["image_test"]["status"], "success")
+        state = (await self.http.get("/admin/api/accounts")).json()["data"]
+        self.assertIsNone(state[0]["image_test"])
+        self.assertEqual(state[1]["login_status"], "valid")
+        self.assertNotIn("synthetic-image", str(state))
+
+    async def test_image_failure_does_not_invalidate_login_or_retry(self):
+        await self.add()
+        called = []
+
+        async def generate(*args):
+            called.append(1)
+            raise RuntimeError("private upstream content")
+
+        with patch("gemini_webapi.server.generate_image", generate):
+            response = await self.http.post("/admin/api/accounts/a/image-test", json={})
+        self.assertEqual(len(called), 1)
+        self.assertEqual(response.json()["image_test"]["error"], "upstream_failure")
+        self.assertNotIn("private upstream", response.text)
+        state = (await self.http.get("/admin/api/accounts")).json()["data"][0]
+        self.assertEqual(state["login_status"], "valid")
+        self.assertEqual(state["status"], "paused")
+
+    async def test_image_test_reserves_account_after_http_cancellation(self):
+        await self.add()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def generate(*args):
+            entered.set()
+            await release.wait()
+            return {"data": [{"b64_json": "synthetic"}]}
+
+        with patch("gemini_webapi.server.generate_image", generate):
+            request = asyncio.create_task(
+                self.http.post("/admin/api/accounts/a/image-test", json={})
+            )
+            await entered.wait()
+            request.cancel()
+            with self.assertRaises(asyncio.CancelledError):  # noqa: PT027
+                await request
+            for suffix in ["/image-test", "/check"]:
+                result = await self.http.post("/admin/api/accounts/a" + suffix, json={})
+                self.assertEqual(result.status_code, 409)
+            self.assertEqual((await self.http.delete("/admin/api/accounts/a")).status_code, 409)
+            self.assertEqual(
+                (
+                    await self.http.put(
+                        "/admin/api/accounts/a/cookies",
+                        json={"secure_1psid": "new", "secure_1psidts": "new"},
+                    )
+                ).status_code,
+                409,
+            )
+            self.assertEqual(self.app.state.accounts[0].status, "busy")
+            release.set()
+            for _ in range(20):
+                await asyncio.sleep(0)
+                if self.app.state.accounts[0].status == "idle":
+                    break
+            self.assertEqual(self.app.state.accounts[0].image_test["status"], "success")
+            self.assertEqual(self.app.state.accounts[0].status, "idle")

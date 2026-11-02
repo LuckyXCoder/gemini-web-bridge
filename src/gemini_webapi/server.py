@@ -87,6 +87,7 @@ class Account:
     removing: bool = False
     task: asyncio.Task | None = None
     display_name: str | None = None
+    image_test: dict | None = None
 
 
 class AccountConfig(BaseModel):
@@ -359,6 +360,77 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
         tasks.add(account.task)
         account.task.add_done_callback(tasks.discard)
 
+    async def test_image(account, model):
+        # Reserve before awaiting: the idle worker cannot take a shared-queue item.
+        if not account.enabled or account.status != "idle" or account.checking or account.removing:
+            raise HTTPException(409, "Account is busy, paused or disabled")
+        old_worker = account.task
+        if old_worker:
+            old_worker.cancel()
+        account.status = "busy"
+        account.checking = True
+        account.image_test = {
+            "time": time.time(),
+            "model": model,
+            "status": "running",
+            "error": None,
+        }
+
+        async def run():
+            started = time.monotonic()
+            cancelled = False
+            result = None
+            try:
+                if old_worker:
+                    with suppress(asyncio.CancelledError):
+                        await old_worker
+                async with asyncio.timeout(timeout):
+                    await initialize(account)
+                    result = await generate_image(
+                        account.client,
+                        ImageRequest(
+                            model=model,
+                            prompt="Generate a simple image of an orange cat sitting beside a window. No text.",
+                            aspect_ratio="1:1",
+                        ),
+                        chat_model,
+                    )
+                account.image_test.update(status="success")
+            except asyncio.CancelledError:
+                cancelled = True
+                account.image_test.update(status="failed", error="service_stopping")
+                raise
+            except Exception as exc:
+                error = (
+                    "authentication_failed"
+                    if isinstance(exc, AuthError)
+                    else "quota_exceeded"
+                    if isinstance(exc, UsageLimitExceededError)
+                    else "timeout"
+                    if isinstance(exc, TimeoutError)
+                    else "upstream_failure"
+                )
+                account.image_test.update(status="failed", error=error)
+                if error == "authentication_failed":
+                    account.login_status = "invalid"
+                    account.last_checked_at = time.time()
+                await close(account)
+                account.status = "paused"
+            finally:
+                account.image_test["duration"] = round(time.monotonic() - started, 2)
+                account.checking = False
+                if not cancelled and account.status == "busy":
+                    account.status = "idle"
+                    spawn(account)
+                drain_unavailable(app.state.queue)
+            return {"id": account.id, "image_test": dict(account.image_test), "image": result}
+
+        task = asyncio.create_task(run())
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        # Disconnects must not release the account or cause a second submission.
+        return await asyncio.shield(task)
+
     @asynccontextmanager
     async def lifespan(app):
         queue = asyncio.Queue(maxsize=queue_size)
@@ -458,7 +530,15 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
         from .admin import register_admin
 
         register_admin(
-            app, pool, admin_path, admin_key, initialize, close, spawn, drain_unavailable
+            app,
+            pool,
+            admin_path,
+            admin_key,
+            initialize,
+            close,
+            spawn,
+            drain_unavailable,
+            test_image,
         )
         static = Path(
             os.environ.get(
