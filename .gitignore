@@ -212,3 +212,8 @@ cookies.json
 accounts.local.json
 secrets/
 state/
+
+# Frontend build output
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo

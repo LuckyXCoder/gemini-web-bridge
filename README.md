@@ -107,13 +107,45 @@ Recent request records contain timestamp, elapsed seconds, success/failure and a
 generic error code. They exclude prompts and secrets, retain only ten per account,
 and are cleared on restart. Runtime state and the last check timestamp are not a
 continuous guarantee that Google still accepts the session. Management endpoints
-are not registered unless the administrator key is set. No UI, YAML editor, account
-deletion or service-key management is included in this backend MVP.
+are not registered unless the administrator key is set. YAML editing, account
+deletion and service-key management are not included.
 
 The service binds to loopback by default. `GEMINI_BRIDGE_HOST` and
 `GEMINI_BRIDGE_PORT` can override the bind address/port for controlled deployments.
 Keep management local or behind an SSH tunnel; do not expose plain HTTP credentials
 on an untrusted network.
+
+### Account status page (MVP)
+
+Build the frontend once, then run the Python service with administrator mode enabled:
+
+```bash
+cd web
+npm ci
+npm run build
+cd ..
+uv run --no-dev --extra server python -m gemini_webapi.server
+```
+
+Open `http://127.0.0.1:18088/admin/` and enter the administrator key. The key is kept
+only in page memory, not local/session storage; reloading the page requires login again.
+For frontend development, `npm run dev` in `web/` proxies `/admin/api` to port 18088.
+FastAPI serves the built `web/dist` on the same origin; Node.js is not needed at runtime.
+`GEMINI_BRIDGE_WEB_DIR` can point to another frontend build directory.
+
+This page only shows account aliases, enabled/runtime state, last login-check result,
+last ten request outcomes and queue depth. Refresh is manual; there is no polling.
+It has no credential editor, account mutation controls, YAML editor or image-generation UI.
+
+`POST /admin/api/accounts/{id}/check` performs the manual login check. It uses a separate
+client with a temporary copy of that account's cache, disables automatic cookie refresh
+and browser-cookie extraction, then closes the probe and deletes its temporary files.
+It does not generate images, change the account's enabled/runtime state, overwrite
+credentials or update its persistent cache. Busy accounts and duplicate concurrent
+checks return 409. Management updates for a checking account also return 409.
+Results are `valid`, `invalid` (unauthenticated) or `unavailable` (network/configuration
+failure), and represent only the check time. An invalid result does not automatically
+pause or disable the worker: runtime state and login-check results are shown separately.
 
 ### Multiple accounts
 
@@ -188,7 +220,7 @@ PYTHONPATH=src:tests uv run --no-dev --extra server --extra dev python -m unitte
 ```
 
 Run only one service process (one Uvicorn worker) for a given account pool. Do not
-share its accounts/cache with another running instance. This version has no administration UI, weights or quota prediction; the optional
+share its accounts/cache with another running instance. The status page is read-only. This version has no weights or quota prediction; the optional
 administrator API handles account addition and cookie replacement. Single-account
 CPA v8.0.38 forwarding has been locally verified; the multi-account service keeps
 the same image contract. Callers must use this supported parameter subset. Before exposing

@@ -17,6 +17,7 @@ import orjson
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from PIL import Image as PillowImage
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -74,6 +75,8 @@ class Account:
     enabled: bool = True
     recent: deque = field(default_factory=lambda: deque(maxlen=10))
     last_checked_at: float | None = None
+    login_status: str = "unknown"
+    checking: bool = False
     task: asyncio.Task | None = None
 
 
@@ -203,7 +206,10 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
         if not was_running:
             account.last_checked_at = time.time()
         if not account.client.access_token or not account.client._check_account_status():
+            account.login_status = "invalid"
             raise AuthError("Gemini account is not authenticated or available")
+        if not was_running:
+            account.login_status = "valid"
 
     async def close(account):
         if account.client is None:
@@ -439,6 +445,13 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
         register_admin(
             app, pool, admin_path, admin_key, initialize, close, spawn, drain_unavailable
         )
+        static = Path(
+            os.environ.get(
+                "GEMINI_BRIDGE_WEB_DIR", Path(__file__).resolve().parents[2] / "web" / "dist"
+            )
+        )
+        if static.is_dir():
+            app.mount("/admin", StaticFiles(directory=static, html=True), name="admin-ui")
     return app
 
 

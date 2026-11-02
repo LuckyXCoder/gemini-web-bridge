@@ -3,14 +3,18 @@
 import asyncio
 import hmac
 import os
+import shutil
 import time
 import uuid
 from contextlib import suppress
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import orjson
 from fastapi import Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
+
+from .exceptions import AuthError
 
 
 def write_private_json(path: Path, value):
@@ -65,6 +69,8 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
                     "enabled": a.enabled,
                     "status": a.status,
                     "last_checked_at": a.last_checked_at,
+                    "login_status": a.login_status,
+                    "checking": a.checking,
                     "recent": list(a.recent),
                 }
                 for a in pool
@@ -160,6 +166,66 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
     async def accounts():
         return snapshot()
 
+    @app.post("/admin/api/accounts/{account_id}/check", dependencies=[Depends(authorize)])
+    async def check_login(account_id: str):
+        # Separate client and disposable cache: no generation, no modification of
+        # the worker's session, enabled state, credentials or persistent cache.
+        account = find(account_id)
+        if account.status == "busy" or account.checking:
+            raise HTTPException(409, "Account is busy or already being checked")
+        account.checking = True
+        probe = None
+        try:
+            entry = next(x for x in entries if x["id"] == account_id)
+            with TemporaryDirectory(prefix="gemini-login-check-") as directory:
+                try:
+                    path = (config_path.parent / Path(entry["cookies_file"]).expanduser()).resolve()
+                    raw = orjson.loads(path.read_bytes())
+                    cookies = raw.get("cookies", raw)
+                    psid = cookies.get("__Secure-1PSID")
+                    if not isinstance(psid, str) or not psid.strip():
+                        raise ValueError()
+                    source = (config_path.parent / Path(entry["cache_dir"]).expanduser()).resolve()
+                    for file in source.glob(".cached_cookies*"):
+                        if file.is_file():
+                            target = Path(directory) / file.name
+                            shutil.copyfile(file, target)
+                            target.chmod(0o600)
+                    probe = SingleSubmissionClient(
+                        psid,
+                        cookies.get("__Secure-1PSIDTS", ""),
+                        proxy=os.environ.get("GEMINI_PROXY") or None,
+                        cookie_cache_dir=directory,
+                        use_browser_cookies=False,
+                    )
+                    async with asyncio.timeout(45):
+                        await probe.init(
+                            timeout=30, auto_close=False, auto_refresh=False, verbose=False
+                        )
+                    account.login_status = (
+                        "valid"
+                        if probe.access_token and probe._check_account_status()
+                        else "invalid"
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except AuthError:
+                    account.login_status = "invalid"
+                except Exception:
+                    account.login_status = "unavailable"
+                finally:
+                    if probe:
+                        with suppress(Exception):
+                            await probe.close()
+                account.last_checked_at = time.time()
+        finally:
+            account.checking = False
+        return {
+            "id": account.id,
+            "login_status": account.login_status,
+            "last_checked_at": account.last_checked_at,
+        }
+
     @app.post("/admin/api/accounts", dependencies=[Depends(authorize)])
     async def add(request: NewAccount):
         async with lock:
@@ -179,11 +245,11 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
     async def update(account_id: str, request: Credentials):
         async with lock:
             old = find(account_id)
-            if old.status == "busy":
+            if old.status == "busy" or old.checking:
                 raise HTTPException(409, "Account is busy; update cookies after its task finishes")
             candidate_account, entry = await candidate(account_id, request)
             # Generation can start while the replacement is being validated.
-            if old.status == "busy":
+            if old.status == "busy" or old.checking:
                 await close(candidate_account)
                 raise HTTPException(
                     409, "Account became busy; update cookies after its task finishes"
@@ -210,6 +276,8 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
     async def toggle(account_id: str, request: Enabled):
         async with lock:
             account = find(account_id)
+            if account.checking:
+                raise HTTPException(409, "Account is busy checking login; try again afterward")
             if not request.enabled:
                 persist([{**x, "enabled": False} if x["id"] == account_id else x for x in entries])
                 account.enabled = False

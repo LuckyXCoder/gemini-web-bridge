@@ -202,3 +202,82 @@ class TestAdmin(unittest.IsolatedAsyncioTestCase):
         async with other.router.lifespan_context(other):
             self.assertEqual(other.state.accounts[0].status, "disabled")
             self.assertIsNone(other.state.accounts[0].client)
+
+    async def test_manual_login_check_isolated_and_no_generation(self):
+        await self.add()
+        account = self.app.state.accounts[0]
+        old_client = account.client
+        entry = json.loads(self.path.read_text())["accounts"][0]
+        source = Path(entry["cache_dir"]) / ".cached_cookies_test.json"
+        source.write_text('{"test":"unchanged"}')
+        before = source.read_bytes()
+        probes = []
+        original_init = FakeClient.__init__
+
+        def factory(self, *args, **kwargs):
+            original_init(self, *args, **kwargs)
+            probes.append(self)
+
+        with patch.object(FakeClient, "__init__", factory):
+            result = await self.http.post("/admin/api/accounts/a/check")
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json()["login_status"], "valid")
+        self.assertIs(account.client, old_client)
+        self.assertTrue(account.enabled)
+        self.assertEqual(account.status, "idle")
+        self.assertEqual(list(account.recent), [])
+        self.assertEqual(source.read_bytes(), before)
+        self.assertFalse(Path(probes[0].options["cookie_cache_dir"]).exists())
+        self.assertFalse(probes[0].options["use_browser_cookies"])
+        self.assertEqual(old_client.closed, 0)
+        self.assertGreater(probes[0].closed, 0)
+        denied = await self.http.post(
+            "/admin/api/accounts/a/check", headers={"Authorization": "Bearer service-test"}
+        )
+        self.assertEqual(denied.status_code, 401)
+
+    async def test_failed_check_preserves_worker_and_disabled_state(self):
+        await self.add()
+        await self.http.put("/admin/api/accounts/a/enabled", json={"enabled": False})
+
+        async def unauthenticated(self, **kwargs):
+            self.access_token = None
+
+        with patch.object(FakeClient, "init", unauthenticated):
+            result = await self.http.post("/admin/api/accounts/a/check")
+        self.assertEqual(result.json()["login_status"], "invalid")
+        account = self.app.state.accounts[0]
+        self.assertFalse(account.enabled)
+        self.assertEqual(account.status, "disabled")
+        self.assertFalse(account.checking)
+
+    async def test_check_blocks_duplicate_check_and_account_update(self):
+        await self.add()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow(self, **kwargs):
+            entered.set()
+            await release.wait()
+
+        with patch.object(FakeClient, "init", slow):
+            task = asyncio.create_task(self.http.post("/admin/api/accounts/a/check"))
+            await asyncio.wait_for(entered.wait(), 1)
+            self.assertEqual((await self.http.post("/admin/api/accounts/a/check")).status_code, 409)
+            self.assertEqual(
+                (
+                    await self.http.put("/admin/api/accounts/a/enabled", json={"enabled": False})
+                ).status_code,
+                409,
+            )
+            self.assertEqual(
+                (
+                    await self.http.put(
+                        "/admin/api/accounts/a/cookies",
+                        json={"secure_1psid": "x", "secure_1psidts": "y"},
+                    )
+                ).status_code,
+                409,
+            )
+            release.set()
+            self.assertEqual((await task).status_code, 200)
