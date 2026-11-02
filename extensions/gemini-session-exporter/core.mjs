@@ -80,9 +80,9 @@ export async function readSession(api, report = () => {}) {
   }
 }
 
-export function makeExport(session, email, confirmed) {
+export function makeExport(session, email) {
   const value = email.trim();
-  if (!session || !confirmed) throw new Error('请先读取并确认目标账号。');
+  if (!session) throw new Error('请先读取目标账号。');
   if (value.length > 100 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) throw new Error('请填写正确的邮箱，最多100个字符。');
   return {
     schema_version: 1,
@@ -90,7 +90,7 @@ export function makeExport(session, email, confirmed) {
     exported_at: new Date().toISOString(),
     email: value,
     display_name: value,
-    email_source: session.candidates.length === 1 && session.candidates[0] === value ? 'page_account_control_confirmed' : 'user_confirmed',
+    email_source: session.candidates.length === 1 && session.candidates[0] === value ? 'page_account_control' : 'user_entered',
     account_index: 0,
     cookies: {'__Secure-1PSID': session.cookies['__Secure-1PSID'], '__Secure-1PSIDTS':session.cookies['__Secure-1PSIDTS']},
   };

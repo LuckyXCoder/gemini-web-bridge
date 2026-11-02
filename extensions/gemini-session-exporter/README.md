@@ -14,10 +14,10 @@ AGPL-3.0; see LICENSE. Not an official Google extension.
 
 1. Use a dedicated browser profile or an incognito session containing only the target Google account. For incognito, explicitly allow this extension there in the browser's extension settings.
 2. Open `https://gemini.google.com/app`, click the extension, then **读取当前账号**.
-3. Verify the detected email, or enter it if the account controls cannot be read. Confirm that this session belongs to the target account.
+3. Verify the detected email, or enter it if the account controls cannot be read. The export buttons become available once cookies are read and the email is valid.
 4. Download JSON or copy JSON. In Bridge, open **新增账号** or **编辑**, select **导入 JSON**, and choose a file or paste the JSON. Review the filled fields before saving.
 
-The two cookies are read through the browser's cookies API, including HttpOnly cookies. Only these two names are requested, only for gemini.google.com, from the cookie store containing the active tab. The email is extracted only from visible account controls, not chat content. Google UI changes or cross-origin account frames may prevent automatic email detection; manual confirmation is required.
+The two cookies are read through the browser's cookies API, including HttpOnly cookies. Only these two names are requested, only for gemini.google.com, from the cookie store containing the active tab. The email is extracted only from visible account controls, not chat content. Google UI changes or cross-origin account frames may prevent automatic email detection; the email can be entered manually.
 
 Google may share session cookies across multiple signed-in accounts. A detected email does not cryptographically prove Cookie ownership. This MVP rejects non-default `/u/N` or `authuser` account routes and requires a dedicated/single-account session. It does not configure Bridge's account_index. Do not export multiple account labels from the same shared Google session as though they were distinct accounts.
 

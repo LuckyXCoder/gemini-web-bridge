@@ -8,8 +8,9 @@ test('export/import roundtrip only fills allowed fields',()=>{
  const data=makeExport(session,'test@example.com',true);
  assert.deepEqual(parseCredentialImport(JSON.stringify({...data,id:'injected',cookies_file:'/tmp/evil',enabled:true})),{display_name:'test@example.com',secure_1psid:'synthetic-psid',secure_1psidts:'synthetic-ts'});
 });
-test('requires email and explicit confirmation',()=>{
- assert.throws(()=>makeExport(session,'test@example.com',false));
+test('requires a loaded session and valid email without a confirmation checkbox',()=>{
+ assert.throws(()=>makeExport(null,'test@example.com'));
+ assert.equal(makeExport(session,'test@example.com').email_source,'page_account_control');
  assert.throws(()=>makeExport(session,'not-an-email',true));
 });
 test('rejects non-Gemini and secondary account routes',()=>{
