@@ -34,6 +34,8 @@ DisplayName = Annotated[
     ),
 ]
 
+DEFAULT_TEST_PROMPT = "生成一张窗边橘猫的图片，温暖自然光，完整展示猫的身体，不要文字或水印。"  # noqa: RUF001
+
 MODELS = {"gemini-web-image": False, "gemini-web-pro-image": True}
 
 
@@ -360,10 +362,11 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
         tasks.add(account.task)
         account.task.add_done_callback(tasks.discard)
 
-    async def test_image(account, model):
+    async def test_image(account, model, prompt=None):
         # Reserve before awaiting: the idle worker cannot take a shared-queue item.
         if not account.enabled or account.status != "idle" or account.checking or account.removing:
             raise HTTPException(409, "Account is busy, paused or disabled")
+        prompt = DEFAULT_TEST_PROMPT if prompt is None else prompt.strip()
         old_worker = account.task
         if old_worker:
             old_worker.cancel()
@@ -372,6 +375,7 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
         account.image_test = {
             "time": time.time(),
             "model": model,
+            "prompt": prompt,
             "status": "running",
             "error": None,
         }
@@ -390,7 +394,7 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
                         account.client,
                         ImageRequest(
                             model=model,
-                            prompt="Generate a simple image of an orange cat sitting beside a window. No text.",
+                            prompt=prompt,
                             aspect_ratio="1:1",
                         ),
                         chat_model,

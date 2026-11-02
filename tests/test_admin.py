@@ -504,3 +504,28 @@ class TestAdmin(unittest.IsolatedAsyncioTestCase):
                     break
             self.assertEqual(self.app.state.accounts[0].image_test["status"], "success")
             self.assertEqual(self.app.state.accounts[0].status, "idle")
+
+    async def test_image_prompt_defaults_custom_and_invalid(self):
+        from gemini_webapi.server import DEFAULT_TEST_PROMPT
+
+        await self.add()
+        prompts = []
+
+        async def generate(client, request, model):
+            prompts.append(request.prompt)
+            return {"data": [{"b64_json": "synthetic"}]}
+
+        with patch("gemini_webapi.server.generate_image", generate):
+            for bad in ["", "  ", "x" * 16001]:
+                response = await self.http.post(
+                    "/admin/api/accounts/a/image-test", json={"prompt": bad}
+                )
+                self.assertEqual(response.status_code, 400)
+            self.assertEqual(prompts, [])
+            default = await self.http.post("/admin/api/accounts/a/image-test", json={})
+            custom = await self.http.post(
+                "/admin/api/accounts/a/image-test", json={"prompt": "  一只小狗  "}
+            )
+        self.assertEqual(prompts, [DEFAULT_TEST_PROMPT, "一只小狗"])
+        self.assertEqual(default.json()["image_test"]["prompt"], DEFAULT_TEST_PROMPT)
+        self.assertEqual(custom.json()["image_test"]["prompt"], "一只小狗")

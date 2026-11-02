@@ -1,17 +1,19 @@
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Alert, Button, Card, ConfigProvider, Empty, Form, Input, Layout, Menu, Modal, Popconfirm, Select, Skeleton, Space, Statistic, Table, Tag, Tooltip, Typography, message } from 'antd';
+import { Alert, Button, Card, ConfigProvider, Empty, Form, Input, Layout, Menu, Modal, Popconfirm, Radio, Select, Skeleton, Space, Statistic, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { ApiOutlined, CheckCircleOutlined, ClockCircleOutlined, DeleteOutlined, EditOutlined, LogoutOutlined, PlusOutlined, ReloadOutlined, SafetyCertificateOutlined, TeamOutlined } from '@ant-design/icons';
 import 'antd/dist/reset.css';
 import './style.css';
 import { parseCredentialImport } from './credentialImport.mjs';
 
 type Outcome = { time: number; success: boolean; duration: number; error: string | null };
-type ImageTest = { time: number; model: string; status: string; error: string | null; duration?: number };
+type ImageTest = { prompt?: string; time: number; model: string; status: string; error: string | null; duration?: number };
 type Account = { image_test?: ImageTest; id: string; display_name?: string; enabled: boolean; status: string; login_status: string; last_checked_at: number | null; checking: boolean; removing: boolean; recent: Outcome[] };
 type Snapshot = { data: Account[]; queue_depth: number };
 type AccountForm = { display_name: string; secure_1psid?: string; secure_1psidts?: string };
 const nameOf = (account: Account) => account.display_name || account.id;
+const defaultTestPrompt = '生成一张窗边橘猫的图片，温暖自然光，完整展示猫的身体，不要文字或水印。';
+const imageModelName = (model: string) => model === 'gemini-web-pro-image' ? 'Nano Banana Pro' : 'Nano Banana（网页默认）';
 const empty: Snapshot = { data: [], queue_depth: 0 };
 const runtime: Record<string, [string, string]> = { idle: ['空闲', 'green'], busy: ['生成中', 'blue'], paused: ['已暂停', 'orange'], disabled: ['已禁用', 'default'], starting: ['初始化中', 'blue'] };
 const loginState: Record<string, [string, string]> = { valid: ['有效', 'green'], invalid: ['已失效', 'red'], unavailable: ['验证失败', 'orange'], unknown: ['未验证', 'default'] };
@@ -32,6 +34,8 @@ function App() {
   const [updated, setUpdated] = useState<number | null>(null);
   const [testAccount, setTestAccount] = useState<Account | null>(null);
   const [testModel, setTestModel] = useState('gemini-web-image');
+  const [promptMode, setPromptMode] = useState<'default' | 'custom'>('default');
+  const [customPrompt, setCustomPrompt] = useState('');
   const [testResult, setTestResult] = useState<ImageTest | null>(null);
   const [testImage, setTestImage] = useState('');
   const [testError, setTestError] = useState('');
@@ -115,10 +119,10 @@ function App() {
     finally { setAction(null); }
   }
   async function runImageTest() {
-    if (!testAccount) return;
+    if (!testAccount || (promptMode === 'custom' && !customPrompt.trim())) return;
     setAction('image-test'); setTestResult(null); setTestImage(''); setTestError('');
     try {
-      const result = await request(`/accounts/${encodeURIComponent(testAccount.id)}/image-test`, token, 'POST', {model: testModel}, 330000);
+      const result = await request(`/accounts/${encodeURIComponent(testAccount.id)}/image-test`, token, 'POST', {model: testModel, ...(promptMode === 'custom' ? {prompt: customPrompt.trim()} : {})}, 330000);
       setTestResult(result.image_test);
       const encoded = result.image?.data?.[0]?.b64_json;
       if (encoded) setTestImage('data:image/' + (encoded.startsWith('iVBOR') ? 'png' : encoded.startsWith('UklGR') ? 'webp' : 'jpeg') + ';base64,' + encoded);
@@ -206,11 +210,11 @@ function App() {
     { title: '账号', key: 'id', render: (_: unknown, a: Account) => <Space size={12}><span className="account-icon"><ApiOutlined /></span><div><Typography.Text strong className="account-name">{nameOf(a)}</Typography.Text><div className="muted">{a.enabled ? '已启用' : '已禁用'} · Gemini 网页账号</div></div></Space> },
     { title: '运行状态', key: 'status', render: (_: unknown, a: Account) => { const [label, color] = a.removing ? ['待删除', 'orange'] : runtime[a.status] || [a.status, 'default']; return <Tag color={color}>{label}</Tag>; } },
     { title: '凭证状态', key: 'login', render: (_: unknown, a: Account) => { const [label, color] = loginState[a.login_status] || loginState.unknown; return <div><Tag color={color}>{label}</Tag><div className="timestamp">{stamp(a.last_checked_at)}</div></div>; } },
-    { title: '生图验证', key: 'image-test', render: (_: unknown, a: Account) => a.image_test ? <div><Tag color={a.image_test.status === 'success' ? 'green' : a.image_test.status === 'running' ? 'blue' : 'red'}>{a.image_test.status === 'success' ? '成功' : a.image_test.status === 'running' ? '生成中' : '失败'} · {a.image_test.model === 'gemini-web-pro-image' ? 'Pro' : '普通'}</Tag><div className="timestamp">{stamp(a.image_test.time)}</div>{a.image_test.error && <div className="muted">{errorNames[a.image_test.error] || '生成失败'}</div>}</div> : <span className="muted">未测试</span> },
+    { title: '生图验证', key: 'image-test', render: (_: unknown, a: Account) => a.image_test ? <div><Tag color={a.image_test.status === 'success' ? 'green' : a.image_test.status === 'running' ? 'blue' : 'red'}>{a.image_test.status === 'success' ? '成功' : a.image_test.status === 'running' ? '生成中' : '失败'} · {imageModelName(a.image_test.model)}</Tag><div className="timestamp">{stamp(a.image_test.time)}</div>{a.image_test.error && <div className="muted">{errorNames[a.image_test.error] || '生成失败'}</div>}</div> : <span className="muted">未测试</span> },
     { title: '最近请求', key: 'recent', render: (_: unknown, a: Account) => <div><div className="timestamp">{stamp(a.recent.at(-1)?.time ?? null)}</div><div className="results">{a.recent.length ? a.recent.map((r, i) => <Tooltip key={`${r.time}-${i}`} title={<>{r.success ? '成功' : '失败'} · {r.duration}s<br />{stamp(r.time)}{r.error && <><br />{errorNames[r.error] || '请求失败'}</>}</>}><span tabIndex={0} aria-label={`${r.success ? '成功' : '失败'}，${r.duration}秒`} className={`result ${r.success ? 'success' : 'failure'}`} /></Tooltip>) : <span className="muted">暂无请求记录</span>}</div></div> },
     { title: '操作', key: 'action', fixed: 'right' as const, width: 390, render: (_: unknown, a: Account) => <Space size={8}>
       <Tooltip title={a.status === 'busy' ? '正在生成，任务结束后再验证' : '向 Google 验证当前 Cookie，不生成图片'}><Button size="small" icon={<SafetyCertificateOutlined />} loading={action === 'check:' + a.id || a.checking} disabled={locked || a.status === 'busy' || a.removing} onClick={() => void check(a)}>验证账号状态</Button></Tooltip>
-      <Button size="small" disabled={locked || !a.enabled || a.status !== 'idle' || a.checking || a.removing} onClick={() => { setTestAccount(a); setTestModel('gemini-web-image'); setTestResult(null); setTestImage(''); setTestError(''); }}>测试生图</Button>
+      <Button size="small" disabled={locked || !a.enabled || a.status !== 'idle' || a.checking || a.removing} onClick={() => { setTestAccount(a); setTestModel('gemini-web-image'); setPromptMode('default'); setCustomPrompt(''); setTestResult(null); setTestImage(''); setTestError(''); }}>测试生图</Button>
       <Button size="small" icon={<EditOutlined />} disabled={locked || a.checking || a.removing} onClick={() => editAccount(a)}>编辑</Button>
       <Popconfirm title={`删除账号 ${nameOf(a)}？`} description="停止分配新任务，当前任务完成后移出列表。磁盘上的凭证文件会保留。" okText="删除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={() => removeAccount(a)} disabled={locked || a.checking || a.removing}><Button danger size="small" icon={<DeleteOutlined />} disabled={locked || a.checking || a.removing}>删除</Button></Popconfirm>
     </Space> },
@@ -231,9 +235,16 @@ function App() {
           <div className="note"><span className="dot success" />成功 <span className="dot failure" />失败 <span>最近 10 次请求 · 重启后清空</span></div>
         </Card>
       </Layout.Content></Layout></Layout>}
-    <Modal title={`测试生图 · ${testAccount ? nameOf(testAccount) : ''}`} open={testAccount !== null} onCancel={() => { setTestAccount(null); setTestImage(''); setTestResult(null); }} onOk={() => void runImageTest()} okText="生成一张" cancelText="关闭" confirmLoading={action === 'image-test'} okButtonProps={{disabled: locked || testResult !== null || Boolean(testError)}} closable={action !== 'image-test'} maskClosable={action !== 'image-test'} cancelButtonProps={{disabled: action === 'image-test'}} destroyOnHidden>
-      <p className="muted">使用当前账号生成一张窗边橘猫测试图，会消耗生图额度。失败不自动重试或切换账号。</p>
-      <Select aria-label="生图验证模式" value={testModel} disabled={action === 'image-test' || testResult !== null} onChange={setTestModel} style={{width:'100%'}} options={[{value:'gemini-web-image',label:'普通生图'},{value:'gemini-web-pro-image',label:'Pro 生图'}]} />
+    <Modal title={`测试生图 · ${testAccount ? nameOf(testAccount) : ''}`} open={testAccount !== null} onCancel={() => { setTestAccount(null); setTestImage(''); setTestResult(null); }} onOk={() => void runImageTest()} okText="生成测试图片" cancelText="关闭" confirmLoading={action === 'image-test'} okButtonProps={{disabled: locked || testResult !== null || Boolean(testError) || (promptMode === 'custom' && !customPrompt.trim())}} closable={action !== 'image-test'} maskClosable={action !== 'image-test'} cancelButtonProps={{disabled: action === 'image-test'}} destroyOnHidden>
+      <p className="muted">使用当前账号生成一张测试图，会消耗生图额度。失败不自动重试或切换账号。</p>
+      <Form layout="vertical">
+        <Form.Item label="图片模型"><Select aria-label="图片模型" value={testModel} disabled={action === 'image-test' || testResult !== null} onChange={setTestModel} options={[{value:'gemini-web-image',label:'Nano Banana（网页默认）'},{value:'gemini-web-pro-image',label:'Nano Banana Pro'}]} /></Form.Item>
+        <Form.Item label="提示词">
+          <Radio.Group value={promptMode} disabled={action === 'image-test' || testResult !== null} onChange={event => setPromptMode(event.target.value)} options={[{value:'default',label:'默认提示词'},{value:'custom',label:'自定义提示词'}]} />
+          {promptMode === 'default' ? <Typography.Paragraph style={{marginTop:12,marginBottom:0}} type="secondary">{defaultTestPrompt}</Typography.Paragraph> : <Input.TextArea aria-label="自定义提示词" placeholder="描述你希望生成的图片" value={customPrompt} onChange={event => setCustomPrompt(event.target.value)} disabled={action === 'image-test' || testResult !== null} rows={4} maxLength={16000} showCount style={{marginTop:12}} />}
+        </Form.Item>
+      </Form>
+      {testResult && <div className="muted">本次模型：{imageModelName(testResult.model)}<br />本次提示词：{testResult.prompt}</div>}
       {testError && <Alert style={{marginTop:16}} type="error" title={testError} />}
       {testResult && <Alert style={{marginTop:16}} type={testResult.status === 'success' ? 'success' : 'error'} title={testResult.status === 'success' ? `生图成功 · ${testResult.duration}s` : errorNames[testResult.error || ''] || '生图失败'} />}
       {testImage && <img src={testImage} alt="当前账号生图验证结果" style={{width:'100%',marginTop:16,borderRadius:8}} />}

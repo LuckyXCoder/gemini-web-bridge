@@ -13,7 +13,7 @@ from typing import Literal
 
 import orjson
 from fastapi import Depends, Header, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from .exceptions import AuthError
 from .server import DisplayName
@@ -64,6 +64,14 @@ class Enabled(BaseModel):
 class ImageTestRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model: Literal["gemini-web-image", "gemini-web-pro-image"] = "gemini-web-image"
+    prompt: str | None = Field(default=None, min_length=1, max_length=16000)
+
+    @field_validator("prompt")
+    @classmethod
+    def nonempty_prompt(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError("Prompt must not be blank")
+        return value.strip() if value is not None else None
 
 
 def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, drain, test_image):
@@ -198,7 +206,7 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
 
     @app.post("/admin/api/accounts/{account_id}/image-test", dependencies=[Depends(authorize)])
     async def check_image(account_id: str, request: ImageTestRequest):
-        return await test_image(find(account_id), request.model)
+        return await test_image(find(account_id), request.model, request.prompt)
 
     @app.post("/admin/api/accounts/{account_id}/check", dependencies=[Depends(authorize)])
     async def check_login(account_id: str):
