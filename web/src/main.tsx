@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Alert, Button, Card, ConfigProvider, Empty, Form, Input, Layout, Menu, Modal, Popconfirm, Space, Statistic, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { ApiOutlined, CheckCircleOutlined, ClockCircleOutlined, DeleteOutlined, LogoutOutlined, PlusOutlined, ReloadOutlined, SafetyCertificateOutlined, TeamOutlined } from '@ant-design/icons';
@@ -16,8 +16,12 @@ const stamp = (value: number | null) => value ? new Date(value * 1000).toLocaleS
 const errorNames: Record<string, string> = { timeout: '请求超时', upstream_failure: '上游请求或下载失败', authentication_failed: '认证失败', account_unavailable: '账号不可用', quota_exceeded: '额度受限', service_stopping: '服务停止' };
 class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }
 
+const sessionKey = 'gemini-bridge-admin-session';
+function savedKey() { try { return sessionStorage.getItem(sessionKey) || ''; } catch { return ''; } }
+function saveKey(key: string) { try { if (key) sessionStorage.setItem(sessionKey, key); else sessionStorage.removeItem(sessionKey); } catch { /* Browser storage can be disabled. */ } }
+
 function App() {
-  const [token, setToken] = useState('');
+  const [token, setToken] = useState(savedKey);
   const [snapshot, setSnapshot] = useState<Snapshot>(empty);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -31,6 +35,25 @@ function App() {
   const [toast, contextHolder] = message.useMessage();
   const locked = loading || action !== null;
 
+  useEffect(() => {
+    const key = savedKey();
+    if (!key) return;
+    let active = true;
+    const controller = new AbortController();
+    setLoading(true);
+    fetch('/admin/api/accounts', { headers: { Authorization: 'Bearer ' + key }, signal: controller.signal })
+      .then(async response => {
+        if (!active) return;
+        if (response.status === 401) { saveKey(''); setToken(''); setSnapshot(empty); throw new Error('管理员密钥已失效，请重新输入。'); }
+        if (!response.ok) throw new Error('恢复会话失败，请刷新重试。');
+        const data = await response.json();
+        if (active) { setSnapshot(data); setUpdated(Date.now() / 1000); }
+      })
+      .catch(error => { if (active) setError(error.message); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; controller.abort(); };
+  }, []);
+
   async function request(path: string, key = token, method = 'GET', body?: unknown) {
     const response = await fetch('/admin/api' + path, {
       method,
@@ -39,7 +62,7 @@ function App() {
       signal: AbortSignal.timeout(80000),
     });
     if (response.status === 401) {
-      setToken(''); setSnapshot(empty); setAdding(false); addForm.resetFields();
+      saveKey(''); setToken(''); setSnapshot(empty); setAdding(false); addForm.resetFields();
       throw new ApiError(401, '管理员密钥无效，请重新输入。');
     }
     const data = await response.json();
@@ -59,7 +82,7 @@ function App() {
   }
   async function signIn(values: { key: string }) {
     setLoading(true);
-    try { await refresh(values.key); setToken(values.key); form.resetFields(); }
+    try { await refresh(values.key); saveKey(values.key); setToken(values.key); form.resetFields(); }
     catch (e) { setError((e as Error).message); }
     finally { setLoading(false); }
   }
@@ -138,8 +161,8 @@ function App() {
     </Space> },
   ];
   return <ConfigProvider theme={{ token: { colorPrimary: '#2563eb', borderRadius: 8, fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif' } }}>{contextHolder}
-    {!token ? <div className="login"><Card className="login-card"><ApiOutlined className="login-mark" /><Typography.Title level={3}>Gemini Web Bridge</Typography.Title><Typography.Paragraph type="secondary">账号状态控制台</Typography.Paragraph>{error && <Alert type="error" title={error} showIcon />}<Form form={form} layout="vertical" onFinish={signIn}><Form.Item name="key" label="管理员密钥" rules={[{ required: true, message: '请输入管理员密钥' }]}><Input.Password autoComplete="off" placeholder="输入管理员 Key" /></Form.Item><Button block type="primary" htmlType="submit" loading={loading}>查看账号状态</Button></Form><p className="muted">使用独立管理员 Key，不是 CPA 调用 Key。<br />密钥仅存于页面内存，刷新页面后需重新输入。</p></Card></div>
-      : <Layout className="shell"><Layout.Sider width={212} className="sidebar" breakpoint="lg" collapsedWidth={0}><div className="brand"><ApiOutlined /><div>Gemini Bridge<small>账号状态控制台</small></div></div><Menu selectedKeys={['accounts']} items={[{ key: 'accounts', icon: <TeamOutlined />, label: '账号状态' }]} /><div className="sidebar-footer">Gemini Web Bridge<br /><span>独立维护 · AGPL-3.0</span></div></Layout.Sider><Layout><Layout.Header className="header"><span>账号状态</span><Button icon={<LogoutOutlined />} disabled={locked} onClick={() => { setToken(''); setSnapshot(empty); setError(''); setSummary(''); setAdding(false); addForm.resetFields(); }}>退出</Button></Layout.Header><Layout.Content className="content">
+    {!token ? <div className="login"><Card className="login-card"><ApiOutlined className="login-mark" /><Typography.Title level={3}>Gemini Web Bridge</Typography.Title><Typography.Paragraph type="secondary">账号状态控制台</Typography.Paragraph>{error && <Alert type="error" title={error} showIcon />}<Form form={form} layout="vertical" onFinish={signIn}><Form.Item name="key" label="管理员密钥" rules={[{ required: true, message: '请输入管理员密钥' }]}><Input.Password autoComplete="off" placeholder="输入管理员 Key" /></Form.Item><Button block type="primary" htmlType="submit" loading={loading}>查看账号状态</Button></Form><p className="muted">使用独立管理员 Key，不是 CPA 调用 Key。<br />当前标签页刷新可保持登录，退出后清除会话。</p></Card></div>
+      : <Layout className="shell"><Layout.Sider width={212} className="sidebar" breakpoint="lg" collapsedWidth={0}><div className="brand"><ApiOutlined /><div>Gemini Bridge<small>账号状态控制台</small></div></div><Menu selectedKeys={['accounts']} items={[{ key: 'accounts', icon: <TeamOutlined />, label: '账号状态' }]} /><div className="sidebar-footer">Gemini Web Bridge<br /><span>独立维护 · AGPL-3.0</span></div></Layout.Sider><Layout><Layout.Header className="header"><span>账号状态</span><Button icon={<LogoutOutlined />} disabled={locked} onClick={() => { saveKey(''); setToken(''); setSnapshot(empty); setError(''); setSummary(''); setAdding(false); addForm.resetFields(); }}>退出</Button></Layout.Header><Layout.Content className="content">
         <div className="heading"><div><Typography.Title level={3}>账号概览</Typography.Title><Typography.Text type="secondary">查看运行状态，按需验证账号凭证</Typography.Text></div><Space wrap>
           <Tooltip title="刷新服务记录，不重新验证 Google 登录"><Button icon={<ReloadOutlined />} loading={loading} disabled={action !== null} onClick={() => void manualRefresh()}>刷新列表</Button></Tooltip>
           <Button icon={<SafetyCertificateOutlined />} loading={action === 'batch'} disabled={locked || !snapshot.data.length} onClick={() => void batchCheck()}>{progress ? `验证中 ${progress.done}/${progress.total}` : '批量验证'}</Button>

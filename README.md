@@ -128,8 +128,10 @@ cd ..
 uv run --no-dev --extra server python -m gemini_webapi.server
 ```
 
-Open `http://127.0.0.1:18088/admin/` and enter the administrator key. The key is kept
-only in page memory, not local/session storage; reloading the page requires login again.
+Open `http://127.0.0.1:18088/admin/` and enter the administrator key. The administrator key is kept in this tab's sessionStorage to survive refresh and is
+validated again on page load. Logout or HTTP 401 clears it. It is not stored in
+localStorage. Session storage is accessible to same-origin JavaScript, so keep this
+local administration interface isolated from untrusted scripts.
 For frontend development, `npm run dev` in `web/` proxies `/admin/api` to port 18088.
 FastAPI serves the built `web/dist` on the same origin; Node.js is not needed at runtime.
 `GEMINI_BRIDGE_WEB_DIR` can point to another frontend build directory.
