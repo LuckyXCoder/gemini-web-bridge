@@ -55,3 +55,33 @@ test('email extraction is scoped to visible account controls', async()=>{
   if(oldStyle===undefined)delete globalThis.getComputedStyle;else globalThis.getComputedStyle=oldStyle;
  }
 });
+
+test('diagnostics never include raw credentials, emails, URLs or exceptions', async()=>{
+ const {diagnosticLine,environmentSummary}=await import('../extensions/gemini-session-exporter/diagnostics.mjs');
+ const secret='PRIVATE_SECRET@example.com';
+ for(const event of ['page','permissions','store','email','cookie','failed','unknown']){
+  const line=diagnosticLine(event,{name:secret,origin:secret,count:secret,matched:secret,step:secret,value:secret,error:secret,email:secret,url:secret});
+  assert.ok(!line.includes(secret));
+ }
+ assert.ok(!environmentSummary(secret,secret).includes(secret));
+ assert.match(environmentSummary('0.1.2','Mozilla Chrome/130.0.0.0 Edg/130.0.1.0'),/Edg\/130/);
+});
+test('reports permissions and matching counts without recording cookie values',async()=>{
+ const mock=api();const events=[];
+ mock.permissions={contains:async ({origins})=>origins[0]==='https://gemini.google.com/*'};
+ await readSession(mock,(event,data)=>events.push({event,data}));
+ assert.equal(events.filter(x=>x.event==='permissions').length,2);
+ assert.ok(events.some(x=>x.event==='permissions'&&x.data.granted===false));
+ assert.ok(events.some(x=>x.event==='cookie'&&x.data.matched===1&&x.data.accepted===1));
+ assert.ok(!JSON.stringify(events).includes('synthetic-psid'));
+ assert.ok(!JSON.stringify(events).includes('test@example.com'));
+});
+test('records missing-cookie failure step and filtered counts',async()=>{
+ const mock=api();const events=[];
+ mock.cookies.getAll=async()=>[{path:'/other',domain:'.google.com',value:'private-value'},{path:'/',domain:'.google.com',partitionKey:{topLevelSite:'https://example.com'},value:'private-value'}];
+ await assert.rejects(readSession(mock,(event,data)=>events.push({event,data})),/未读取到/);
+ const details=events.find(x=>x.event==='cookie'&&x.data.matched===2).data;
+ assert.equal(details.accepted,0);assert.equal(details.pathRejected,1);assert.equal(details.partitionRejected,1);
+ assert.deepEqual(events.at(-1),{event:'failed',data:{step:'cookie'}});
+ assert.ok(!JSON.stringify(events).includes('private-value'));
+});

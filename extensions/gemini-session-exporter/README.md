@@ -37,3 +37,12 @@ cookies applicable to the Gemini URL; no additional cookies are exported.
 Replace the unpacked extension files, reload it in chrome://extensions, and
 review/accept the updated site permissions if Chrome asks. Confirm version 0.1.1
 before retrying. Missing and duplicate cookies now have separate messages.
+
+## Diagnostics (0.1.2)
+
+Expand **诊断信息** and click **复制诊断信息** after reproducing a failure.
+Diagnostics contain extension/browser versions, exact-domain permission checks,
+default-account route status, email candidate count, Cookie match/filter counts,
+and the failed step. They never include Cookie values, email addresses, complete
+page URLs, raw browser exception messages, or chat content. Each read resets the
+report; closing the popup discards it. No logs are persisted or uploaded.

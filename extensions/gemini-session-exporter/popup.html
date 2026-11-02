@@ -8,4 +8,9 @@
 <label class="confirm"><input id="confirm" type="checkbox" disabled><span>我确认当前浏览器会话只登录目标账号，邮箱与凭证对应。</span></label>
 <div class="actions"><button id="download" disabled>下载 JSON</button><button id="copy" disabled>复制 JSON</button></div>
 <p class="notice">JSON 含登录凭证。只导入自己的 Bridge，不要发到聊天或提交 Git。关闭弹窗后内存数据会清除，已下载或复制的数据需自行保管。</p>
-<script type="module" src="popup.js"></script></body></html>
+<details id="diagnostics"><summary>诊断信息</summary>
+<p class="muted">仅记录本次操作，不包含 Cookie 值、邮箱或聊天内容。关闭弹窗后清除。</p>
+<button id="copy-diagnostics">复制诊断信息</button>
+<p id="diagnostic-status" class="muted" role="status"></p>
+<pre id="diagnostic-output" tabindex="0"></pre></details>
+<script type="module"  src="popup.js"></script></body></html>
