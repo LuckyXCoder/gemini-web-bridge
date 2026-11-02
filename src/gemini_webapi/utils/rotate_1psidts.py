@@ -3,6 +3,7 @@ import hashlib
 import os
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 import orjson as json
@@ -17,6 +18,7 @@ from gemini_webapi.constants import (
     Headers,
     format_http_version,
 )
+from gemini_webapi.diagnostics import event, scope
 from gemini_webapi.exceptions import AuthError
 
 from .logger import logger
@@ -132,7 +134,28 @@ def get_cookies_cache_path(
     return hashed_path
 
 
-async def rotate_1psidts(
+async def rotate_1psidts(client, base_psid=None, verbose=False, cache_dir=None):
+    with scope(request_id=uuid.uuid4().hex):
+        started = time.monotonic()
+        event("renewal_started")
+        try:
+            result = await _rotate_1psidts(client, base_psid, verbose, cache_dir)
+            event(
+                "renewal_finished",
+                cookie_present=bool(result),
+                duration_ms=round((time.monotonic() - started) * 1000),
+            )
+            return result
+        except BaseException as exc:
+            event(
+                "renewal_failed",
+                error_type=type(exc).__name__,
+                duration_ms=round((time.monotonic() - started) * 1000),
+            )
+            raise
+
+
+async def _rotate_1psidts(
     client: AsyncSession,
     base_psid: str | None = None,
     verbose: bool = False,
@@ -166,14 +189,18 @@ async def rotate_1psidts(
         client.cookies, base_psid=base_psid, verbose=verbose, cache_dir=cache_dir
     )
     if not path:
+        event("renewal_skipped", reason="missing_psid")
         return None
 
     # Check if the cache file was modified in the last minute to avoid 429 Too Many Requests
     if path.is_file() and time.time() - path.stat().st_mtime <= 60:
+        event("renewal_skipped", reason="fresh_cache")
         if verbose:
             logger.debug("Rotation skipped, cache is still fresh (< 60s).")
         return extract_cookie_value(client.cookies, COOKIE_1PSIDTS)
 
+    previous = extract_cookie_value(client.cookies, COOKIE_1PSIDTS)
+    event("renewal_request")
     response = await client.post(
         url=Endpoint.ROTATE_COOKIES,
         headers=Headers.ROTATE_COOKIES.value,
@@ -183,14 +210,23 @@ async def rotate_1psidts(
         logger.debug(
             f"HTTP Request: POST {Endpoint.ROTATE_COOKIES} [{response.status_code}] (HTTP/{format_http_version(response.http_version)})"
         )
+    event(
+        "renewal_response",
+        http_status=response.status_code,
+        cookie_received=bool(extract_cookie_value(response.cookies, COOKIE_1PSIDTS)),
+        cookie_changed=previous != extract_cookie_value(client.cookies, COOKIE_1PSIDTS),
+    )
     if response.status_code == 401:
         clear_cookies_cache(
             client.cookies, base_psid=base_psid, verbose=verbose, cache_dir=cache_dir
         )
+        event("renewal_cache_cleared", reason="http_401")
         raise AuthError
     response.raise_for_status()
 
+    event("renewal_cache_write")
     save_cookies(client.cookies, base_psid=base_psid, verbose=verbose, cache_dir=cache_dir)
+    event("renewal_cache_saved", cache_saved=True)
     if new_1psidts := extract_cookie_value(client.cookies, COOKIE_1PSIDTS):
         return new_1psidts
 

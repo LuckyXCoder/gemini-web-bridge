@@ -171,7 +171,7 @@ class TestMultiAccount(unittest.IsolatedAsyncioTestCase):
                 jar = Cookies()
                 jar.set("__Secure-1PSID", "same-initial", domain=".google.com", secure=True)
                 jar.set("__Secure-1PSIDTS", suffix, domain=".google.com", secure=True)
-                response = SimpleNamespace(status_code=200, raise_for_status=lambda: None)
+                response = SimpleNamespace(status_code=200, cookies=Cookies(), raise_for_status=lambda: None)
                 client = SimpleNamespace(cookies=jar, post=AsyncMock(return_value=response))
                 with patch.dict(os.environ, {"GEMINI_COOKIE_PATH": str(Path(t) / "wrong")}):
                     await rotate_1psidts(client, base_psid="same-initial", cache_dir=directory)

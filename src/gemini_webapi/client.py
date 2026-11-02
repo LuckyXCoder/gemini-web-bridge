@@ -46,6 +46,7 @@ from .constants import (
     format_http_version,
     warn_deprecated_model,
 )
+from .diagnostics import event
 from .exceptions import (
     APIError,
     AuthError,
@@ -386,6 +387,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
                 f"triggered client closing."
             )
 
+        event("client_close", was_running=self._running, refresh_active=self.refresh_task is not None)
         was_running = self._running
         self._running = False
 
@@ -432,7 +434,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
                 cache_dir=self.cookie_cache_dir,
             )
         except OSError as e:
-            logger.warning(f"Failed to save cookies to cache file: {e}")
+            logger.warning(f"Failed to save cookies to cache file: {type(e).__name__}")
 
     async def reset_close_task(self) -> None:
         """Reset the timer for closing the client when a new request is made."""
@@ -483,6 +485,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
 
         while self._running:
             jitter = random.uniform(-15, 15)
+            event("renewal_scheduled", interval_seconds=round(max(60, self.refresh_interval + jitter), 2))
             await asyncio.sleep(max(60, self.refresh_interval + jitter))
 
             if not self._running:
@@ -492,6 +495,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
                 logger.warning(
                     f"Stopping the auto-refresh cookies. Account status: {self.account_status.name} - {self.account_status.description}"
                 )
+                event("renewal_stopped", reason="account_status", status=self.account_status.name)
                 self.refresh_task = None
                 break
 
@@ -521,7 +525,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
                 )
             except Exception as e:
                 logger.warning(
-                    f"Unexpected error while refreshing cookies: {e}. Retrying in next interval."
+                    f"Unexpected error while refreshing cookies: {type(e).__name__}. Retrying in next interval."
                 )
 
     def _parse_rpc_results(self, response_text: str, target_id: str) -> Iterator[Any]:
@@ -535,6 +539,7 @@ class GeminiClient(ChatMixin, GemMixin, ResearchMixin):
                 # Check for server-side rejection (e.g., code 7 for permission denied)
                 reject_code = get_nested_value(part, [5, 0])
                 if reject_code == 7:
+                    event("rpc_auth_rejected", stage=str(target_id), reason="permission_denied_or_unauthenticated")
                     self.account_status = AccountStatus.UNAUTHENTICATED
                     logger.warning(
                         f"RPC request {target_id} failed: Permission denied or unauthenticated."

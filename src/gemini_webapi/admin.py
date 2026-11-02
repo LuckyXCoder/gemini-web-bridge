@@ -15,6 +15,7 @@ import orjson
 from fastapi import Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
+from .diagnostics import event, scope
 from .exceptions import AuthError
 from .server import DisplayName
 
@@ -135,12 +136,12 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
             raise HTTPException(404, "Account not found")
         return account
 
-    async def stop_idle(account):
+    async def stop_idle(account, reason):
         if account.task and not account.task.done():
             account.task.cancel()
             with suppress(asyncio.CancelledError):
                 await account.task
-        await close(account)
+        await close(account, reason=reason)
 
     def verify_duplicate(psid, exclude=None):
         for account in pool:
@@ -210,63 +211,70 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
 
     @app.post("/admin/api/accounts/{account_id}/check", dependencies=[Depends(authorize)])
     async def check_login(account_id: str):
-        # Separate client and disposable cache: no generation, no modification of
-        # the worker's session, enabled state, credentials or persistent cache.
-        account = find(account_id)
-        if account.status == "busy" or account.checking or account.removing:
-            raise HTTPException(409, "Account is busy or already being checked")
-        account.checking = True
-        probe = None
-        try:
-            entry = next(x for x in entries if x["id"] == account_id)
-            with TemporaryDirectory(prefix="gemini-login-check-") as directory:
-                try:
-                    path = (config_path.parent / Path(entry["cookies_file"]).expanduser()).resolve()
-                    raw = orjson.loads(path.read_bytes())
-                    cookies = raw.get("cookies", raw)
-                    psid = cookies.get("__Secure-1PSID")
-                    if not isinstance(psid, str) or not psid.strip():
-                        raise ValueError()
-                    source = (config_path.parent / Path(entry["cache_dir"]).expanduser()).resolve()
-                    for file in source.glob(".cached_cookies*"):
-                        if file.is_file():
-                            target = Path(directory) / file.name
-                            shutil.copyfile(file, target)
-                            target.chmod(0o600)
-                    probe = SingleSubmissionClient(
-                        psid,
-                        cookies.get("__Secure-1PSIDTS", ""),
-                        proxy=os.environ.get("GEMINI_PROXY") or None,
-                        cookie_cache_dir=directory,
-                        use_browser_cookies=False,
-                    )
-                    async with asyncio.timeout(45):
-                        await probe.init(
-                            timeout=30, auto_close=False, auto_refresh=False, verbose=False
+        with scope(account_id):
+            event("login_check_started")
+            # Separate client and disposable cache: no generation, no modification of
+            # the worker's session, enabled state, credentials or persistent cache.
+            account = find(account_id)
+            if account.status == "busy" or account.checking or account.removing:
+                raise HTTPException(409, "Account is busy or already being checked")
+            account.checking = True
+            probe = None
+            try:
+                entry = next(x for x in entries if x["id"] == account_id)
+                with TemporaryDirectory(prefix="gemini-login-check-") as directory:
+                    try:
+                        path = (
+                            config_path.parent / Path(entry["cookies_file"]).expanduser()
+                        ).resolve()
+                        raw = orjson.loads(path.read_bytes())
+                        cookies = raw.get("cookies", raw)
+                        psid = cookies.get("__Secure-1PSID")
+                        if not isinstance(psid, str) or not psid.strip():
+                            raise ValueError()
+                        source = (
+                            config_path.parent / Path(entry["cache_dir"]).expanduser()
+                        ).resolve()
+                        for file in source.glob(".cached_cookies*"):
+                            if file.is_file():
+                                target = Path(directory) / file.name
+                                shutil.copyfile(file, target)
+                                target.chmod(0o600)
+                        probe = SingleSubmissionClient(
+                            psid,
+                            cookies.get("__Secure-1PSIDTS", ""),
+                            proxy=os.environ.get("GEMINI_PROXY") or None,
+                            cookie_cache_dir=directory,
+                            use_browser_cookies=False,
                         )
-                    account.login_status = (
-                        "valid"
-                        if probe.access_token and probe._check_account_status()
-                        else "invalid"
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except AuthError:
-                    account.login_status = "invalid"
-                except Exception:
-                    account.login_status = "unavailable"
-                finally:
-                    if probe:
-                        with suppress(Exception):
-                            await probe.close()
-                account.last_checked_at = time.time()
-        finally:
-            account.checking = False
-        return {
-            "id": account.id,
-            "login_status": account.login_status,
-            "last_checked_at": account.last_checked_at,
-        }
+                        async with asyncio.timeout(45):
+                            await probe.init(
+                                timeout=30, auto_close=False, auto_refresh=False, verbose=False
+                            )
+                        account.login_status = (
+                            "valid"
+                            if probe.access_token and probe._check_account_status()
+                            else "invalid"
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except AuthError:
+                        account.login_status = "invalid"
+                    except Exception:
+                        account.login_status = "unavailable"
+                    finally:
+                        if probe:
+                            with suppress(Exception):
+                                await probe.close()
+                    account.last_checked_at = time.time()
+            finally:
+                account.checking = False
+            event("login_check_finished", status=account.login_status)
+            return {
+                "id": account.id,
+                "login_status": account.login_status,
+                "last_checked_at": account.last_checked_at,
+            }
 
     @app.post("/admin/api/accounts", dependencies=[Depends(authorize)])
     async def add(request: NewAccount):
@@ -326,7 +334,7 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
                 await close(candidate_account)
                 raise
             old.enabled = False
-            await stop_idle(old)
+            await stop_idle(old, reason="credentials_replaced")
             candidate_account.enabled = entry["enabled"]
             candidate_account.recent = old.recent
             pool[pool.index(old)] = candidate_account
@@ -353,7 +361,7 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
             account.removing = True
             pending = account.status == "busy"
             if not pending:
-                await stop_idle(account)
+                await stop_idle(account, reason="account_removed")
                 pool.remove(account)
             # The active worker removes busy accounts after the current task finishes.
             drain(app.state.queue)
@@ -369,7 +377,7 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
                 persist([{**x, "enabled": False} if x["id"] == account_id else x for x in entries])
                 account.enabled = False
                 if account.status != "busy":
-                    await stop_idle(account)
+                    await stop_idle(account, reason="account_disabled")
                     account.status = "disabled"
                 drain(app.state.queue)
                 return {"id": account_id, "enabled": False, "status": account.status}

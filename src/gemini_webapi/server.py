@@ -23,6 +23,8 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from . import GeminiClient
 from .client import _SUPPORTED_IMAGE_ASPECT_RATIOS
+from .diagnostics import configure as configure_diagnostics
+from .diagnostics import event, scope
 from .exceptions import AuthError, UsageLimitExceededError
 from .types import GeneratedImage
 from .utils import logger
@@ -58,22 +60,42 @@ class ImageRequest(BaseModel):
 
 
 async def generate_image(client, request, chat_model):
-    response = await client.generate_content(
-        request.prompt,
-        model=chat_model,
-        pro_image=MODELS[request.model],
-        aspect_ratio=request.aspect_ratio,
-    )
-    generated = next((x for x in response.images if isinstance(x, GeneratedImage)), None)
-    if generated is None:
-        raise RuntimeError("No generated image")
-    with TemporaryDirectory(prefix="gemini-image-") as directory:
-        saved = Path(await generated.save(path=directory, filename="image.bin", verbose=False))
-        # A successful HTTP response or an image-shaped URL is not enough.
-        with PillowImage.open(saved) as image:
-            image.verify()
-        encoded = base64.b64encode(saved.read_bytes()).decode("ascii")
-    return {"created": int(time.time()), "data": [{"b64_json": encoded}]}
+    started = time.monotonic()
+    stage = "generation"
+    try:
+        stage = "generation"
+        event("image_stage", stage=stage)
+        response = await client.generate_content(
+            request.prompt,
+            model=chat_model,
+            pro_image=MODELS[request.model],
+            aspect_ratio=request.aspect_ratio,
+        )
+        stage = "image_selection"
+        event("image_stage", stage=stage)
+        generated = next((x for x in response.images if isinstance(x, GeneratedImage)), None)
+        if generated is None:
+            raise RuntimeError("No generated image")
+        with TemporaryDirectory(prefix="gemini-image-") as directory:
+            stage = "download"
+            event("image_stage", stage=stage)
+            saved = Path(await generated.save(path=directory, filename="image.bin", verbose=False))
+            # A successful HTTP response or an image-shaped URL is not enough.
+            stage = "image_validation"
+            event("image_stage", stage=stage)
+            with PillowImage.open(saved) as image:
+                image.verify()
+            encoded = base64.b64encode(saved.read_bytes()).decode("ascii")
+        event("image_completed", duration_ms=round((time.monotonic() - started) * 1000))
+        return {"created": int(time.time()), "data": [{"b64_json": encoded}]}
+    except BaseException as exc:
+        event(
+            "image_failed",
+            stage=stage,
+            error_type=type(exc).__name__,
+            duration_ms=round((time.monotonic() - started) * 1000),
+        )
+        raise
 
 
 @dataclass
@@ -179,6 +201,7 @@ def load_accounts(allow_empty=False):
 
 def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=None):
     """One process, one worker per account, one bounded shared queue."""
+    configure_diagnostics()
     key = api_key or os.environ.get("GEMINI_BRIDGE_API_KEY")
     if not key:
         raise ValueError("GEMINI_BRIDGE_API_KEY is required")
@@ -215,23 +238,27 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
     chat_model = os.environ.get("GEMINI_BRIDGE_CHAT_MODEL", "gemini-pro")
 
     async def initialize(account):
-        was_running = getattr(account.client, "_running", False)
-        await account.client.init(
-            timeout=timeout, auto_close=False, auto_refresh=True, verbose=False
-        )
-        if not was_running:
-            account.last_checked_at = time.time()
-        if not account.client.access_token or not account.client._check_account_status():
-            account.login_status = "invalid"
-            raise AuthError("Gemini account is not authenticated or available")
-        if not was_running:
-            account.login_status = "valid"
+        with scope(account.id):
+            event("account_initialize")
+            was_running = getattr(account.client, "_running", False)
+            await account.client.init(
+                timeout=timeout, auto_close=False, auto_refresh=True, verbose=False
+            )
+            if not was_running:
+                account.last_checked_at = time.time()
+            if not account.client.access_token or not account.client._check_account_status():
+                account.login_status = "invalid"
+                raise AuthError("Gemini account is not authenticated or available")
+            if not was_running:
+                account.login_status = "valid"
 
-    async def close(account):
+    async def close(account, reason="management_or_shutdown"):
         if account.client is None:
             return
         try:
-            await account.client.close()
+            with scope(account.id):
+                event("account_close", reason=reason)
+                await account.client.close()
         except Exception:
             # Keep cleanup failures from killing workers and stranding queued callers.
             account.status = "paused"
@@ -258,89 +285,91 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
     async def worker(account, queue):
         while account.enabled and account.status != "paused":
             request, future = await queue.get()
-            initialized = False
-            started = None
-            outcome = "failed"
-            failure = None
-            try:
-                if future.cancelled():
-                    continue
-                account.status = "busy"
-                started = time.time()
-                async with asyncio.timeout(timeout):
-                    await initialize(account)
-                    initialized = True
-                    result = await generate_image(account.client, request, chat_model)
-                outcome = "success"
-                if not future.done():
-                    future.set_result(result)
-            except asyncio.CancelledError:
-                failure = "service_stopping"
-                if not future.done():
-                    future.set_result(
-                        error_response(
-                            503,
-                            "service_stopping",
-                            "Service is stopping; generation outcome may be unknown.",
+            with scope(account.id):
+                initialized = False
+                started = None
+                outcome = "failed"
+                failure = None
+                try:
+                    if future.cancelled():
+                        continue
+                    account.status = "busy"
+                    started = time.time()
+                    async with asyncio.timeout(timeout):
+                        await initialize(account)
+                        initialized = True
+                        with scope(account.id):
+                            result = await generate_image(account.client, request, chat_model)
+                    outcome = "success"
+                    if not future.done():
+                        future.set_result(result)
+                except asyncio.CancelledError:
+                    failure = "service_stopping"
+                    if not future.done():
+                        future.set_result(
+                            error_response(
+                                503,
+                                "service_stopping",
+                                "Service is stopping; generation outcome may be unknown.",
+                            )
                         )
-                    )
-                raise
-            except Exception as exc:
-                if not initialized:
-                    failure = "account_unavailable"
-                elif isinstance(exc, (AuthError,)) or getattr(exc, "status_code", None) == 401:
-                    failure = "authentication_failed"
-                elif isinstance(exc, UsageLimitExceededError):
-                    failure = "quota_exceeded"
-                else:
-                    failure = "timeout" if isinstance(exc, TimeoutError) else "upstream_failure"
-                if (
-                    not initialized
-                    or isinstance(exc, (AuthError, UsageLimitExceededError))
-                    or getattr(exc, "status_code", None) == 401
-                    or not account.client._check_account_status()
-                ):
-                    account.status = "paused"
-                if not initialized:
-                    result = error_response(
-                        503,
-                        "account_unavailable",
-                        "Selected account is unavailable. No generation was submitted.",
-                    )
-                elif isinstance(exc, TimeoutError):
-                    result = error_response(
-                        504,
-                        "generation_timeout",
-                        "Generation timed out; upstream may still be processing. No automatic resubmission.",
-                    )
-                else:
-                    result = error_response(
-                        502,
-                        "generation_failed",
-                        "Generation or image download failed. No automatic resubmission.",
-                    )
-                if not future.done():
-                    future.set_result(result)
-                await close(account)
-            finally:
-                if started is not None:
-                    account.recent.append(
-                        {
-                            "time": started,
-                            "success": outcome == "success",
-                            "duration": round(time.time() - started, 2),
-                            "error": failure,
-                        }
-                    )
-                if account.status != "paused":
-                    account.status = "idle"
-                queue.task_done()
-                drain_unavailable(queue)
-            if not account.enabled:
-                await close(account)
-                account.status = "disabled"
-                if account.removing and account in pool:
-                    pool.remove(account)
+                    raise
+                except Exception as exc:
+                    if not initialized:
+                        failure = "account_unavailable"
+                    elif isinstance(exc, (AuthError,)) or getattr(exc, "status_code", None) == 401:
+                        failure = "authentication_failed"
+                    elif isinstance(exc, UsageLimitExceededError):
+                        failure = "quota_exceeded"
+                    else:
+                        failure = "timeout" if isinstance(exc, TimeoutError) else "upstream_failure"
+                    if (
+                        not initialized
+                        or isinstance(exc, (AuthError, UsageLimitExceededError))
+                        or getattr(exc, "status_code", None) == 401
+                        or not account.client._check_account_status()
+                    ):
+                        account.status = "paused"
+                    if not initialized:
+                        result = error_response(
+                            503,
+                            "account_unavailable",
+                            "Selected account is unavailable. No generation was submitted.",
+                        )
+                    elif isinstance(exc, TimeoutError):
+                        result = error_response(
+                            504,
+                            "generation_timeout",
+                            "Generation timed out; upstream may still be processing. No automatic resubmission.",
+                        )
+                    else:
+                        result = error_response(
+                            502,
+                            "generation_failed",
+                            "Generation or image download failed. No automatic resubmission.",
+                        )
+                    if not future.done():
+                        future.set_result(result)
+                    await close(account, reason=failure or "worker_failure")
+                finally:
+                    if started is not None:
+                        account.recent.append(
+                            {
+                                "time": started,
+                                "success": outcome == "success",
+                                "duration": round(time.time() - started, 2),
+                                "error": failure,
+                            }
+                        )
+                    if account.status != "paused":
+                        account.status = "idle"
+                    queue.task_done()
+                    drain_unavailable(queue)
+                if not account.enabled:
+                    await close(account)
+                    account.status = "disabled"
+                    if account.removing and account in pool:
+                        pool.remove(account)
 
     async def start_account(account):
         if not account.enabled:
@@ -352,7 +381,7 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
             account.status = "idle"
         except Exception:
             account.status = "paused"
-            await close(account)
+            await close(account, reason="initialization_failed")
             logger.warning("Account {} initialization failed; paused", account.id)
 
     tasks = set()
@@ -418,7 +447,7 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
                 if error == "authentication_failed":
                     account.login_status = "invalid"
                     account.last_checked_at = time.time()
-                await close(account)
+                await close(account, reason=error)
                 account.status = "paused"
             finally:
                 account.image_test["duration"] = round(time.monotonic() - started, 2)
@@ -429,7 +458,13 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
                 drain_unavailable(app.state.queue)
             return {"id": account.id, "image_test": dict(account.image_test), "image": result}
 
-        task = asyncio.create_task(run())
+        async def traced_run():
+            with scope(account.id) as request_id:
+                account.image_test["request_id"] = request_id
+                event("image_test_started")
+                return await run()
+
+        task = asyncio.create_task(traced_run())
         tasks.add(task)
         task.add_done_callback(tasks.discard)
         # Disconnects must not release the account or cause a second submission.
@@ -456,7 +491,7 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
             for account in pool:
                 account.status = "paused"
             drain_unavailable(queue)
-            await asyncio.gather(*(close(a) for a in pool))
+            await asyncio.gather(*(close(a, reason="service_shutdown") for a in pool))
 
     async def authorize(authorization: str | None = Header(default=None)):
         provided = authorization or ""
