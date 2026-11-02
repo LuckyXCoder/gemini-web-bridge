@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Alert, Button, Card, ConfigProvider, Empty, Form, Input, Layout, Menu, Modal, Popconfirm, Select, Space, Statistic, Table, Tag, Tooltip, Typography, message } from 'antd';
+import { Alert, Button, Card, ConfigProvider, Empty, Form, Input, Layout, Menu, Modal, Popconfirm, Select, Skeleton, Space, Statistic, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { ApiOutlined, CheckCircleOutlined, ClockCircleOutlined, DeleteOutlined, EditOutlined, LogoutOutlined, PlusOutlined, ReloadOutlined, SafetyCertificateOutlined, TeamOutlined } from '@ant-design/icons';
 import 'antd/dist/reset.css';
 import './style.css';
@@ -27,7 +27,7 @@ function App() {
   const [token, setToken] = useState(savedKey);
   const [snapshot, setSnapshot] = useState<Snapshot>(empty);
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(() => Boolean(savedKey()));
   const [action, setAction] = useState<string | null>(null);
   const [updated, setUpdated] = useState<number | null>(null);
   const [testAccount, setTestAccount] = useState<Account | null>(null);
@@ -56,7 +56,7 @@ function App() {
     fetch('/admin/api/accounts', { headers: { Authorization: 'Bearer ' + key }, signal: controller.signal })
       .then(async response => {
         if (!active) return;
-        if (response.status === 401) { saveKey(''); setToken(''); setSnapshot(empty); throw new Error('管理员密钥已失效，请重新输入。'); }
+        if (response.status === 401) { saveKey(''); setToken(''); setSnapshot(empty); setUpdated(null); throw new Error('管理员密钥已失效，请重新输入。'); }
         if (!response.ok) throw new Error('恢复会话失败，请刷新重试。');
         const data = await response.json();
         if (active) { setSnapshot(data); setUpdated(Date.now() / 1000); }
@@ -74,7 +74,7 @@ function App() {
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (response.status === 401) {
-      saveKey(''); setToken(''); setSnapshot(empty); setAdding(false); setEditing(null); addForm.resetFields();
+      saveKey(''); setToken(''); setSnapshot(empty); setUpdated(null); setAdding(false); setEditing(null); addForm.resetFields();
       throw new ApiError(401, '管理员密钥无效，请重新输入。');
     }
     const data = await response.json();
@@ -217,17 +217,17 @@ function App() {
   ];
   return <ConfigProvider theme={{ token: { colorPrimary: '#2563eb', borderRadius: 8, fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif' } }}>{contextHolder}
     {!token ? <div className="login"><Card className="login-card"><ApiOutlined className="login-mark" /><Typography.Title level={3}>Gemini Web Bridge</Typography.Title><Typography.Paragraph type="secondary">账号状态控制台</Typography.Paragraph>{error && <Alert type="error" title={error} showIcon />}<Form form={form} layout="vertical" onFinish={signIn}><Form.Item name="key" label="管理员密钥" rules={[{ required: true, message: '请输入管理员密钥' }]}><Input.Password autoComplete="off" placeholder="输入管理员 Key" /></Form.Item><Button block type="primary" htmlType="submit" loading={loading}>查看账号状态</Button></Form><p className="muted">使用独立管理员 Key，不是 CPA 调用 Key。<br />当前标签页刷新可保持登录，退出后清除会话。</p></Card></div>
-      : <Layout className="shell"><Layout.Sider width={212} className="sidebar" breakpoint="lg" collapsedWidth={0}><div className="brand"><ApiOutlined /><div>Gemini Bridge<small>账号状态控制台</small></div></div><Menu selectedKeys={['accounts']} items={[{ key: 'accounts', icon: <TeamOutlined />, label: '账号状态' }]} /><div className="sidebar-footer">Gemini Web Bridge<br /><span>独立维护 · AGPL-3.0</span></div></Layout.Sider><Layout><Layout.Header className="header"><span>账号状态</span><Button icon={<LogoutOutlined />} disabled={locked} onClick={() => { saveKey(''); setToken(''); setSnapshot(empty); setError(''); setSummary(''); setAdding(false); setEditing(null); addForm.resetFields(); }}>退出</Button></Layout.Header><Layout.Content className="content">
+      : <Layout className="shell"><Layout.Sider width={212} className="sidebar" breakpoint="lg" collapsedWidth={0}><div className="brand"><ApiOutlined /><div>Gemini Bridge<small>账号状态控制台</small></div></div><Menu selectedKeys={['accounts']} items={[{ key: 'accounts', icon: <TeamOutlined />, label: '账号状态' }]} /><div className="sidebar-footer">Gemini Web Bridge<br /><span>独立维护 · AGPL-3.0</span></div></Layout.Sider><Layout><Layout.Header className="header"><span>账号状态</span><Button icon={<LogoutOutlined />} disabled={locked} onClick={() => { saveKey(''); setToken(''); setSnapshot(empty); setUpdated(null); setError(''); setSummary(''); setAdding(false); setEditing(null); addForm.resetFields(); }}>退出</Button></Layout.Header><Layout.Content className="content">
         <div className="heading"><div><Typography.Title level={3}>账号概览</Typography.Title><Typography.Text type="secondary">查看运行状态，按需验证账号凭证</Typography.Text></div><Space wrap>
           <Tooltip title="刷新服务记录，不重新验证 Google 登录"><Button icon={<ReloadOutlined />} loading={loading} disabled={action !== null} onClick={() => void manualRefresh()}>刷新列表</Button></Tooltip>
           <Button icon={<SafetyCertificateOutlined />} loading={action === 'batch'} disabled={locked || !snapshot.data.length} onClick={() => void batchCheck()}>{progress ? `验证中 ${progress.done}/${progress.total}` : '批量验证'}</Button>
           <Button type="primary" icon={<PlusOutlined />} disabled={locked} onClick={() => { addForm.resetFields(); setEditing(null); setAdding(true); }}>新增账号</Button>
         </Space></div>
-        <div className="stats">{[{ title: '账号总数', value: snapshot.data.length, icon: <TeamOutlined /> }, { title: '空闲可用', value: snapshot.data.filter(a => a.enabled && a.status === 'idle').length, icon: <CheckCircleOutlined /> }, { title: '等待任务', value: snapshot.queue_depth, icon: <ClockCircleOutlined /> }].map(item => <Card key={item.title}><Statistic title={item.title} value={item.value} prefix={item.icon} /></Card>)}</div>
+        <div className="stats">{[{ title: '账号总数', value: snapshot.data.length, icon: <TeamOutlined /> }, { title: '空闲可用', value: snapshot.data.filter(a => a.enabled && a.status === 'idle').length, icon: <CheckCircleOutlined /> }, { title: '等待任务', value: snapshot.queue_depth, icon: <ClockCircleOutlined /> }].map(item => <Card key={item.title}><Statistic title={item.title} value={updated === null ? "—" : item.value} prefix={item.icon} /></Card>)}</div>
         {error && <Alert className="error" type="error" title={error} showIcon />}
         <Card className="table-card" title={<div>账号列表<div className="list-hint">凭证验证不生成图片，忙碌账号自动跳过</div></div>} extra={<span className="muted">更新于 {stamp(updated)}</span>}>
           {summary && <div className="batch-summary" role="status">{summary}</div>}
-          <Table rowKey="id" dataSource={snapshot.data} columns={columns} pagination={false} scroll={{ x: 1500 }} locale={{ emptyText: <Empty description="暂无账号"><Button type="primary" onClick={() => setAdding(true)}>新增账号</Button></Empty> }} />
+          {updated === null ? (loading ? <div role="status" aria-label="正在加载账号列表" style={{padding:24}}><Skeleton active paragraph={{rows:3}} /></div> : <div className="muted" style={{padding:24}}>账号列表未加载，请点击刷新列表重试。</div>) : <Table rowKey="id" dataSource={snapshot.data} columns={columns} pagination={false} loading={loading} scroll={{ x: 1500 }} locale={{ emptyText: <Empty description="暂无账号"><Button type="primary" onClick={() => setAdding(true)}>新增账号</Button></Empty> }} />}
           <div className="note"><span className="dot success" />成功 <span className="dot failure" />失败 <span>最近 10 次请求 · 重启后清空</span></div>
         </Card>
       </Layout.Content></Layout></Layout>}
