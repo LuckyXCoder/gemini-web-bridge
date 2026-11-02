@@ -23,6 +23,17 @@ Google may share session cookies across multiple signed-in accounts. A detected 
 
 ## Privacy
 
-No network uploads, analytics, background scripts, browser storage, or credential logging. Cookie values are kept in popup memory only and are not displayed. Downloads and clipboard contents remain sensitive after the popup closes; keep them private. CSP disables network connections from the popup. Permissions are `cookies`, `activeTab`, `scripting`, `clipboardWrite`, with the single host `https://gemini.google.com/*`. Reading email via a clicked extension uses temporary active-tab access. The extension does not read browsing history.
+No network uploads, analytics, background scripts, browser storage, or credential logging. Cookie values are kept in popup memory only and are not displayed. Downloads and clipboard contents remain sensitive after the popup closes; keep them private. CSP disables network connections from the popup. Permissions are `cookies`, `activeTab`, `scripting`, `clipboardWrite`, with hosts `https://gemini.google.com/*` and `https://google.com/*`. Reading email via a clicked extension uses temporary active-tab access. The extension does not read browsing history.
 
 This does not keep cookies valid indefinitely. Bridge validates credentials on import/save. Browser installation, actual Google account-control detection and cookie-store permissions must be verified manually in your browser before relying on it.
+
+## Updating from 0.1.0
+
+Version 0.1.1 adds permission for google.com because the two session cookies use
+the parent domain .google.com. The previous Gemini-only permission could filter
+them out of cookies.getAll results. Queries still request only the two named
+cookies applicable to the Gemini URL; no additional cookies are exported.
+
+Replace the unpacked extension files, reload it in chrome://extensions, and
+review/accept the updated site permissions if Chrome asks. Confirm version 0.1.1
+before retrying. Missing and duplicate cookies now have separate messages.

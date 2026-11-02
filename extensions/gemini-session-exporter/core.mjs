@@ -40,7 +40,9 @@ export async function readSession(api) {
   for (const name of ['__Secure-1PSID', '__Secure-1PSIDTS']) {
     const found = (await api.cookies.getAll({url:'https://gemini.google.com/', name, storeId:store.id}))
       .filter(cookie => cookie.path === '/' && !cookie.partitionKey && ['.google.com','google.com','gemini.google.com','.gemini.google.com'].includes(cookie.domain));
-    if (found.length !== 1 || !found[0].value) throw new Error(`未找到唯一的 ${name}，请确认已登录目标账号。`);
+    if (found.length === 0) throw new Error(`未读取到 ${name}。请确认扩展已更新并获准访问 google.com 和 gemini.google.com，且当前浏览器配置已登录目标账号。`);
+    if (found.length > 1) throw new Error(`找到多个 ${name}，无法安全选择。请使用只登录目标账号的独立浏览器配置。`);
+    if (!found[0].value) throw new Error(`${name} 为空，请重新登录目标账号。`);
     cookies[name] = found[0].value;
   }
   // A tab can navigate while asynchronous reads are in progress.
