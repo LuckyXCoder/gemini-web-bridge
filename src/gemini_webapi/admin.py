@@ -15,6 +15,7 @@ from fastapi import Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from .exceptions import AuthError
+from .server import DisplayName
 
 
 def write_private_json(path: Path, value):
@@ -39,7 +40,19 @@ class Credentials(BaseModel):
 
 
 class NewAccount(Credentials):
-    id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    id: str = Field(
+        default_factory=lambda: "account-" + uuid.uuid4().hex[:16], pattern=r"^[A-Za-z0-9_-]{1,64}$"
+    )
+    display_name: DisplayName | None = None
+
+
+class AccountName(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    display_name: DisplayName
+
+
+class UpdateCredentials(Credentials):
+    display_name: DisplayName | None = None
 
 
 class Enabled(BaseModel):
@@ -59,13 +72,22 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
     initial = {a.id for a in pool}
     for entry in entries:
         if entry["id"] not in initial:
-            pool.append(Account(entry["id"], None, status="disabled", enabled=False))
+            pool.append(
+                Account(
+                    entry["id"],
+                    None,
+                    status="disabled",
+                    enabled=False,
+                    display_name=entry.get("display_name"),
+                )
+            )
 
     def snapshot():
         return {
             "data": [
                 {
                     "id": a.id,
+                    "display_name": a.display_name or a.id,
                     "enabled": a.enabled,
                     "status": a.status,
                     "last_checked_at": a.last_checked_at,
@@ -233,6 +255,8 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
             if any(a.id == request.id for a in pool):
                 raise HTTPException(409, "Account ID already exists")
             account, entry = await candidate(request.id, request)
+            account.display_name = request.display_name
+            entry["display_name"] = request.display_name
             try:
                 persist([*entries, entry])
             except Exception:
@@ -242,8 +266,25 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
             spawn(account)
             return {"id": account.id, "status": account.status}
 
+    @app.patch("/admin/api/accounts/{account_id}", dependencies=[Depends(authorize)])
+    async def rename(account_id: str, request: AccountName):
+        async with lock:
+            account = find(account_id)
+            if account.removing:
+                raise HTTPException(409, "Account is pending removal")
+            persist(
+                [
+                    {**entry, "display_name": request.display_name}
+                    if entry["id"] == account_id
+                    else entry
+                    for entry in entries
+                ]
+            )
+            account.display_name = request.display_name
+            return {"id": account.id, "display_name": account.display_name}
+
     @app.put("/admin/api/accounts/{account_id}/cookies", dependencies=[Depends(authorize)])
-    async def update(account_id: str, request: Credentials):
+    async def update(account_id: str, request: UpdateCredentials):
         async with lock:
             old = find(account_id)
             if old.status == "busy" or old.checking or old.removing:
@@ -256,6 +297,10 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
                     409, "Account became busy; update cookies after its task finishes"
                 )
             entry["enabled"] = old.enabled
+            candidate_account.display_name = (
+                request.display_name if request.display_name is not None else old.display_name
+            )
+            entry["display_name"] = candidate_account.display_name
             try:
                 persist([entry if x["id"] == account_id else x for x in entries])
             except Exception:

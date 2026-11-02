@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Literal
+from typing import Annotated, Literal
 
 import orjson
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -19,13 +19,20 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image as PillowImage
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from . import GeminiClient
 from .client import _SUPPORTED_IMAGE_ASPECT_RATIOS
 from .exceptions import AuthError, UsageLimitExceededError
 from .types import GeneratedImage
 from .utils import logger
+
+DisplayName = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True, min_length=1, max_length=100, pattern=r"^[^\x00-\x1f\x7f]+$"
+    ),
+]
 
 MODELS = {"gemini-web-image": False, "gemini-web-pro-image": True}
 
@@ -79,11 +86,13 @@ class Account:
     checking: bool = False
     removing: bool = False
     task: asyncio.Task | None = None
+    display_name: str | None = None
 
 
 class AccountConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    display_name: DisplayName | None = None
     cookies_file: str
     cache_dir: str
     enabled: bool = True
@@ -91,6 +100,7 @@ class AccountConfig(BaseModel):
 
 def load_accounts(allow_empty=False):
     """Read account files once; never mutate process-wide cache settings."""
+    names = {}
     config_path = os.environ.get("GEMINI_BRIDGE_ACCOUNTS")
     cookie_path = os.environ.get("GEMINI_BRIDGE_COOKIES")
     if config_path and cookie_path:
@@ -114,6 +124,7 @@ def load_accounts(allow_empty=False):
             raise ValueError("Invalid account configuration file") from None
         if len({entry.id for entry in configs}) != len(configs):
             raise ValueError("Account IDs must be unique")
+        names = {entry.id: entry.display_name for entry in configs}
         specs = []
         for entry in configs:
             if entry.enabled:
@@ -153,6 +164,7 @@ def load_accounts(allow_empty=False):
                     cookie_cache_dir=cache_dir,
                     use_browser_cookies=False,
                 ),
+                display_name=names.get(account_id),
             )
         )
     # Validate the complete configuration before creating directories.

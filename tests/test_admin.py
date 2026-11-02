@@ -337,3 +337,87 @@ class TestAdmin(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.app.state.accounts[0].enabled)
         self.assertFalse(self.app.state.accounts[0].removing)
         self.assertEqual(len(json.loads(self.path.read_text())["accounts"]), 1)
+
+    async def test_display_name_accepts_email_and_chinese_without_path_changes(self):
+        response = await self.http.post(
+            "/admin/api/accounts",
+            json={
+                "display_name": "工作账号 user@example.com",
+                "secure_1psid": "new-cookie",
+                "secure_1psidts": "test-ts",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        account_id = response.json()["id"]
+        self.assertRegex(account_id, r"^account-[a-f0-9]{16}$")
+        entry = json.loads(self.path.read_text())["accounts"][0]
+        self.assertNotIn("工作账号", entry["cookies_file"])
+        self.assertNotIn("@", entry["cookies_file"])
+        account = self.app.state.accounts[0]
+        old_client = account.client
+        response = await self.http.patch(
+            "/admin/api/accounts/" + account_id,
+            json={"display_name": "新名称 中文邮箱@example.com"},
+        )
+        self.assertEqual(response.status_code, 200)
+        after = json.loads(self.path.read_text())["accounts"][0]
+        self.assertEqual(after["cookies_file"], entry["cookies_file"])
+        self.assertEqual(after["cache_dir"], entry["cache_dir"])
+        self.assertIs(account.client, old_client)
+        self.assertEqual(account.display_name, "新名称 中文邮箱@example.com")
+        self.assertEqual(
+            (await self.http.get("/admin/api/accounts")).json()["data"][0]["display_name"],
+            account.display_name,
+        )
+
+    async def test_invalid_display_name_rejected(self):
+        await self.add()
+        for name in ["", "   ", "bad\nname", "x" * 101]:
+            response = await self.http.patch("/admin/api/accounts/a", json={"display_name": name})
+            self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            (
+                await self.http.patch(
+                    "/admin/api/accounts/a",
+                    headers={"Authorization": "Bearer service-test"},
+                    json={"display_name": "中文"},
+                )
+            ).status_code,
+            401,
+        )
+
+    async def test_name_and_credentials_update_atomically_and_resume_paused(self):
+        await self.add()
+        account = self.app.state.accounts[0]
+        account.status = "paused"
+        task = account.task
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):  # noqa: PT027
+            await task
+        before = self.path.read_bytes()
+        response = await self.http.put(
+            "/admin/api/accounts/a/cookies",
+            json={
+                "display_name": "new@example.com",
+                "secure_1psid": "invalid",
+                "secure_1psidts": "bad",
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.path.read_bytes(), before)
+        response = await self.http.put(
+            "/admin/api/accounts/a/cookies",
+            json={
+                "display_name": "new@example.com",
+                "secure_1psid": "valid-replacement",
+                "secure_1psidts": "new-ts",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        updated = self.app.state.accounts[0]
+        self.assertTrue(updated.enabled)
+        self.assertEqual(updated.status, "idle")
+        self.assertEqual(updated.display_name, "new@example.com")
+        self.assertEqual(
+            json.loads(self.path.read_text())["accounts"][0]["display_name"], "new@example.com"
+        )

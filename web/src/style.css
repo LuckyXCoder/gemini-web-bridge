@@ -5,3 +5,5 @@
 .list-hint{font-size:12px;font-weight:400;color:#8a96a8;margin-top:5px;line-height:1.6}.table-card .ant-card-head{min-height:76px}
 .batch-summary{padding:14px 0 4px;font-size:13px;color:#62738a}.heading{flex-wrap:wrap}.heading .ant-space{row-gap:8px}
 @media(max-width:700px){.heading{flex-direction:column}.ant-table-cell-fix-right .ant-space{flex-direction:column;align-items:stretch}.note>span:last-child{margin-left:0}}
+
+.account-name{display:block;max-width:280px;overflow-wrap:anywhere}
