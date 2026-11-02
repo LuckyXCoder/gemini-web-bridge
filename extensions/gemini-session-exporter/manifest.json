@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Gemini Bridge Session Exporter",
+  "version": "0.1.3",
+  "description": "User-initiated local export of Gemini account email and two session cookies for Gemini Web Bridge.",
+  "permissions": [
+    "cookies",
+    "activeTab",
+    "scripting",
+    "clipboardWrite"
+  ],
+  "host_permissions": [
+    "https://gemini.google.com/*",
+    "https://google.com/*"
+  ],
+  "incognito": "split",
+  "action": {
+    "default_title": "\u5bfc\u51fa Gemini \u8d26\u53f7",
+    "default_popup": "popup.html"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'none'; base-uri 'none'"
+  }
+}

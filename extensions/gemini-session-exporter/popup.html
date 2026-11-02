@@ -1,0 +1,14 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gemini 账号导出</title><link rel="stylesheet" href="popup.css"></head><body>
+<h1>Gemini 账号导出</h1><p class="muted">仅在点击时读取，不后台采集、不自动上传。</p>
+<button id="read" class="primary">读取当前账号</button>
+<p id="status" role="status">请先打开并登录 gemini.google.com。</p>
+<label for="email">目标账号邮箱</label><input id="email" type="email" maxlength="100" autocomplete="off" placeholder="读取后核对，或手动填写" disabled>
+<p id="email-note" class="muted">只从账号控件识别邮箱，不扫描聊天内容。</p>
+<div id="cookie-status" class="muted">Cookie 尚未读取</div>
+<div class="actions"><button id="download" disabled>下载 JSON</button><button id="copy" disabled>复制 JSON</button></div>
+<details id="diagnostics"><summary>诊断信息</summary>
+<p class="muted">仅记录本次操作，不包含 Cookie 值、邮箱或聊天内容。关闭弹窗后清除。</p>
+<button id="copy-diagnostics">复制诊断信息</button>
+<p id="diagnostic-status" class="muted" role="status"></p>
+<pre id="diagnostic-output" tabindex="0"></pre></details>
+<script type="module"  src="popup.js"></script></body></html>
