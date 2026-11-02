@@ -13,7 +13,7 @@ type Snapshot = { data: Account[]; queue_depth: number };
 type AccountForm = { display_name: string; secure_1psid?: string; secure_1psidts?: string };
 const nameOf = (account: Account) => account.display_name || account.id;
 const defaultTestPrompt = '生成一张窗边橘猫的图片，温暖自然光，完整展示猫的身体，不要文字或水印。';
-const imageModelName = (model: string) => model === 'gemini-web-pro-image' ? 'Nano Banana Pro' : 'Nano Banana（网页默认）';
+const imageModelName = (model: string) => model === 'gemini-web-pro-image' ? 'Nano Banana Pro' : 'Nano Banana 2.1';
 const empty: Snapshot = { data: [], queue_depth: 0 };
 const runtime: Record<string, [string, string]> = { idle: ['空闲', 'green'], busy: ['生成中', 'blue'], paused: ['已暂停', 'orange'], disabled: ['已禁用', 'default'], starting: ['初始化中', 'blue'] };
 const loginState: Record<string, [string, string]> = { valid: ['有效', 'green'], invalid: ['已失效', 'red'], unavailable: ['验证失败', 'orange'], unknown: ['未验证', 'default'] };
@@ -238,7 +238,7 @@ function App() {
     <Modal title={`测试生图 · ${testAccount ? nameOf(testAccount) : ''}`} open={testAccount !== null} onCancel={() => { setTestAccount(null); setTestImage(''); setTestResult(null); }} onOk={() => void runImageTest()} okText="生成测试图片" cancelText="关闭" confirmLoading={action === 'image-test'} okButtonProps={{disabled: locked || testResult !== null || Boolean(testError) || (promptMode === 'custom' && !customPrompt.trim())}} closable={action !== 'image-test'} maskClosable={action !== 'image-test'} cancelButtonProps={{disabled: action === 'image-test'}} destroyOnHidden>
       <p className="muted">使用当前账号生成一张测试图，会消耗生图额度。失败不自动重试或切换账号。</p>
       <Form layout="vertical">
-        <Form.Item label="图片模型"><Select aria-label="图片模型" value={testModel} disabled={action === 'image-test' || testResult !== null} onChange={setTestModel} options={[{value:'gemini-web-image',label:'Nano Banana（网页默认）'},{value:'gemini-web-pro-image',label:'Nano Banana Pro'}]} /></Form.Item>
+        <Form.Item label="图片模型"><Select aria-label="图片模型" value={testModel} disabled={action === 'image-test' || testResult !== null} onChange={setTestModel} options={[{value:'gemini-web-image',label:'Nano Banana 2.1'},{value:'gemini-web-pro-image',label:'Nano Banana Pro'}]} /></Form.Item>
         <Form.Item label="提示词">
           <Radio.Group value={promptMode} disabled={action === 'image-test' || testResult !== null} onChange={event => setPromptMode(event.target.value)} options={[{value:'default',label:'默认提示词'},{value:'custom',label:'自定义提示词'}]} />
           {promptMode === 'default' ? <Typography.Paragraph style={{marginTop:12,marginBottom:0}} type="secondary">{defaultTestPrompt}</Typography.Paragraph> : <Input.TextArea aria-label="自定义提示词" placeholder="描述你希望生成的图片" value={customPrompt} onChange={event => setCustomPrompt(event.target.value)} disabled={action === 'image-test' || testResult !== null} rows={4} maxLength={16000} showCount style={{marginTop:12}} />}
