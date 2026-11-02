@@ -77,6 +77,7 @@ class Account:
     last_checked_at: float | None = None
     login_status: str = "unknown"
     checking: bool = False
+    removing: bool = False
     task: asyncio.Task | None = None
 
 
@@ -323,6 +324,8 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
             if not account.enabled:
                 await close(account)
                 account.status = "disabled"
+                if account.removing and account in pool:
+                    pool.remove(account)
 
     async def start_account(account):
         if not account.enabled:

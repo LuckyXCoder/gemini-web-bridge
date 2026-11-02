@@ -71,6 +71,7 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
                     "last_checked_at": a.last_checked_at,
                     "login_status": a.login_status,
                     "checking": a.checking,
+                    "removing": a.removing,
                     "recent": list(a.recent),
                 }
                 for a in pool
@@ -171,7 +172,7 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
         # Separate client and disposable cache: no generation, no modification of
         # the worker's session, enabled state, credentials or persistent cache.
         account = find(account_id)
-        if account.status == "busy" or account.checking:
+        if account.status == "busy" or account.checking or account.removing:
             raise HTTPException(409, "Account is busy or already being checked")
         account.checking = True
         probe = None
@@ -245,11 +246,11 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
     async def update(account_id: str, request: Credentials):
         async with lock:
             old = find(account_id)
-            if old.status == "busy" or old.checking:
+            if old.status == "busy" or old.checking or old.removing:
                 raise HTTPException(409, "Account is busy; update cookies after its task finishes")
             candidate_account, entry = await candidate(account_id, request)
             # Generation can start while the replacement is being validated.
-            if old.status == "busy" or old.checking:
+            if old.status == "busy" or old.checking or old.removing:
                 await close(candidate_account)
                 raise HTTPException(
                     409, "Account became busy; update cookies after its task finishes"
@@ -272,11 +273,33 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
                 candidate_account.status = "disabled"
             return {"id": account_id, "status": candidate_account.status}
 
+    @app.delete("/admin/api/accounts/{account_id}", dependencies=[Depends(authorize)])
+    async def remove(account_id: str):
+        async with lock:
+            account = find(account_id)
+            if account.checking:
+                raise HTTPException(
+                    409, "Account is busy checking credentials; try again afterward"
+                )
+            if account.removing:
+                return {"id": account_id, "pending": True}
+            # Persist first. A failed save must not stop a working account.
+            persist([entry for entry in entries if entry["id"] != account_id])
+            account.enabled = False
+            account.removing = True
+            pending = account.status == "busy"
+            if not pending:
+                await stop_idle(account)
+                pool.remove(account)
+            # The active worker removes busy accounts after the current task finishes.
+            drain(app.state.queue)
+            return {"id": account_id, "pending": pending}
+
     @app.put("/admin/api/accounts/{account_id}/enabled", dependencies=[Depends(authorize)])
     async def toggle(account_id: str, request: Enabled):
         async with lock:
             account = find(account_id)
-            if account.checking:
+            if account.checking or account.removing:
                 raise HTTPException(409, "Account is busy checking login; try again afterward")
             if not request.enabled:
                 persist([{**x, "enabled": False} if x["id"] == account_id else x for x in entries])

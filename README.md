@@ -81,6 +81,7 @@ All management requests require `Authorization: Bearer <administrator-key>`:
 | `POST /admin/api/accounts` | Validate and add an account without restarting |
 | `PUT /admin/api/accounts/{id}/cookies` | Validate replacement cookies and replace an idle account client |
 | `PUT /admin/api/accounts/{id}/enabled` | Enable/resume with login validation, or disable new work |
+| `DELETE /admin/api/accounts/{id}` | Remove from configuration/pool after any active task finishes; retain credential files |
 
 Add-account JSON (place actual credentials only in a private local file or protected
 client, not shell history):
@@ -107,8 +108,8 @@ Recent request records contain timestamp, elapsed seconds, success/failure and a
 generic error code. They exclude prompts and secrets, retain only ten per account,
 and are cleared on restart. Runtime state and the last check timestamp are not a
 continuous guarantee that Google still accepts the session. Management endpoints
-are not registered unless the administrator key is set. YAML editing, account
-deletion and service-key management are not included.
+are not registered unless the administrator key is set. YAML editing and
+service-key management are not included.
 
 The service binds to loopback by default. `GEMINI_BRIDGE_HOST` and
 `GEMINI_BRIDGE_PORT` can override the bind address/port for controlled deployments.
@@ -133,9 +134,19 @@ For frontend development, `npm run dev` in `web/` proxies `/admin/api` to port 1
 FastAPI serves the built `web/dist` on the same origin; Node.js is not needed at runtime.
 `GEMINI_BRIDGE_WEB_DIR` can point to another frontend build directory.
 
-This page only shows account aliases, enabled/runtime state, last login-check result,
+The page shows account aliases, enabled/runtime state, last credential-check result,
 last ten request outcomes and queue depth. Refresh is manual; there is no polling.
-It has no credential editor, account mutation controls, YAML editor or image-generation UI.
+It supports individual credential checks, sequential batch checks with progress and
+counts, adding accounts after login validation, and deletion with confirmation.
+Batch checks skip busy, checking or pending-removal accounts and never generate images.
+Accounts added in the form are persisted and join the pool without restarting; Cookie
+inputs are cleared on successful submission or dismissal and are never returned by the API.
+
+Deleting an account first removes it from persisted configuration and stops new
+assignments. An idle account disappears immediately; a busy account is marked pending
+removal until its active task completes. Refresh the list to see that completion.
+Cookie/cache files are retained on disk for recovery. No permanent file deletion occurs.
+There is no YAML editor, existing-Cookie editor or image-generation UI.
 
 `POST /admin/api/accounts/{id}/check` performs the manual login check. It uses a separate
 client with a temporary copy of that account's cache, disables automatic cookie refresh
@@ -220,7 +231,7 @@ PYTHONPATH=src:tests uv run --no-dev --extra server --extra dev python -m unitte
 ```
 
 Run only one service process (one Uvicorn worker) for a given account pool. Do not
-share its accounts/cache with another running instance. The status page is read-only. This version has no weights or quota prediction; the optional
+share its accounts/cache with another running instance. The page provides minimal account management. This version has no weights or quota prediction; the optional
 administrator API handles account addition and cookie replacement. Single-account
 CPA v8.0.38 forwarding has been locally verified; the multi-account service keeps
 the same image contract. Callers must use this supported parameter subset. Before exposing

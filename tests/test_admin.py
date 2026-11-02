@@ -281,3 +281,59 @@ class TestAdmin(unittest.IsolatedAsyncioTestCase):
             )
             release.set()
             self.assertEqual((await task).status_code, 200)
+
+    async def test_delete_idle_preserves_credentials_and_requires_admin(self):
+        await self.add()
+        row = json.loads(self.path.read_text())["accounts"][0]
+        cookie_file = Path(row["cookies_file"])
+        cache = Path(row["cache_dir"])
+        before = cookie_file.read_bytes()
+        denied = await self.http.delete(
+            "/admin/api/accounts/a", headers={"Authorization": "Bearer service-test"}
+        )
+        self.assertEqual(denied.status_code, 401)
+        result = await self.http.delete("/admin/api/accounts/a")
+        self.assertEqual(result.status_code, 200)
+        self.assertFalse(result.json()["pending"])
+        self.assertEqual(self.app.state.accounts, [])
+        self.assertEqual(json.loads(self.path.read_text())["accounts"], [])
+        self.assertEqual(cookie_file.read_bytes(), before)
+        self.assertTrue(cache.exists())
+        self.assertEqual((await self.http.delete("/admin/api/accounts/a")).status_code, 404)
+
+    async def test_delete_busy_drains_without_interrupting(self):
+        await self.add()
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def generate(*args):
+            started.set()
+            await finish.wait()
+            return {"data": []}
+
+        with patch("gemini_webapi.server.generate_image", generate):
+            task = asyncio.create_task(
+                self.http.post(
+                    "/v1/images/generations",
+                    headers={"Authorization": "Bearer service-test"},
+                    json={"prompt": "cat"},
+                )
+            )
+            await asyncio.wait_for(started.wait(), 1)
+            response = await self.http.delete("/admin/api/accounts/a")
+            self.assertTrue(response.json()["pending"])
+            self.assertFalse(task.done())
+            self.assertFalse(self.app.state.accounts[0].enabled)
+            self.assertEqual((await self.add()).status_code, 409)
+            self.assertEqual((await self.http.post("/admin/api/accounts/a/check")).status_code, 409)
+            finish.set()
+            self.assertEqual((await task).status_code, 200)
+            self.assertEqual(self.app.state.accounts, [])
+
+    async def test_delete_save_failure_preserves_account(self):
+        await self.add()
+        with patch("gemini_webapi.admin.write_private_json", side_effect=OSError("disk full")):
+            self.assertEqual((await self.http.delete("/admin/api/accounts/a")).status_code, 500)
+        self.assertTrue(self.app.state.accounts[0].enabled)
+        self.assertFalse(self.app.state.accounts[0].removing)
+        self.assertEqual(len(json.loads(self.path.read_text())["accounts"]), 1)
