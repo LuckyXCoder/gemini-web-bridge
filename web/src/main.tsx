@@ -4,6 +4,7 @@ import { Alert, Button, Card, ConfigProvider, Empty, Form, Input, Layout, Menu, 
 import { ApiOutlined, CheckCircleOutlined, ClockCircleOutlined, DeleteOutlined, EditOutlined, LogoutOutlined, PlusOutlined, ReloadOutlined, SafetyCertificateOutlined, TeamOutlined } from '@ant-design/icons';
 import 'antd/dist/reset.css';
 import './style.css';
+import { parseCredentialImport } from './credentialImport.mjs';
 
 type Outcome = { time: number; success: boolean; duration: number; error: string | null };
 type Account = { id: string; display_name?: string; enabled: boolean; status: string; login_status: string; last_checked_at: number | null; checking: boolean; removing: boolean; recent: Outcome[] };
@@ -30,6 +31,9 @@ function App() {
   const [updated, setUpdated] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<Account | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importText, setImportText] = useState('');
+  const [importError, setImportError] = useState('');
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [summary, setSummary] = useState('');
   const [form] = Form.useForm();
@@ -157,6 +161,19 @@ function App() {
     const required = !editing || addForm.getFieldValue('secure_1psid')?.trim() || addForm.getFieldValue('secure_1psidts')?.trim();
     return !required || value?.trim() ? Promise.resolve() : Promise.reject(new Error('更新凭证时请同时填写两个 Cookie'));
   }}];
+  function applyImport(text: string) {
+    try {
+      const values = parseCredentialImport(text);
+      addForm.setFieldsValue(values);
+      setImportText(''); setImportError(''); setImporting(false);
+      toast.success('已填入表单，请确认账号名称，再验证保存');
+    } catch (e) { setImportError((e as Error).message); }
+  }
+  async function importFile(file?: File) {
+    if (!file) return;
+    if (file.size > 65536) { setImportError('文件不能超过 64KB'); return; }
+    try { applyImport(await file.text()); } catch { setImportError('文件读取失败'); }
+  }
   async function removeAccount(account: Account) {
     setAction('delete:' + account.id);
     try {
@@ -195,12 +212,19 @@ function App() {
       </Layout.Content></Layout></Layout>}
     <Modal title={editing ? '编辑账号' : '新增账号'} open={adding || editing !== null} onCancel={() => { addForm.resetFields(); setAdding(false); setEditing(null); }} onOk={() => addForm.submit()} okText={editing ? '保存' : '验证并新增'} cancelText="取消" confirmLoading={action === 'add'} closable={action !== 'add'} maskClosable={action !== 'add'} cancelButtonProps={{ disabled: action === 'add' }} destroyOnHidden>
       <p className="muted">{editing ? '只改名称时无需填写 Cookie。更新凭证请同时填写两个值，验证通过后即时生效。' : '填写邮箱或中文名称方便识别，验证通过后加入账号池。名称不参与 Google 登录。'}</p>
+      <Button disabled={action === 'add' || editing?.status === 'busy'} onClick={() => { setImportText(''); setImportError(''); setImporting(true); }} style={{marginBottom:16}}>导入 JSON</Button>
       <Form form={addForm} layout="vertical" onFinish={saveAccount} preserve={false}>
         <Form.Item name="display_name" label="账号名称" rules={[{ required: true, whitespace: true, message: '请输入账号名称' }, { max: 100, message: '名称最多 100 个字符' }]}><Input placeholder="例如 name@gmail.com 或 中文账号名" autoComplete="off" maxLength={100} /></Form.Item>
         <Form.Item name="secure_1psid" label="__Secure-1PSID" rules={credentialRules}><Input.Password disabled={editing?.status === 'busy'} placeholder={editing ? '留空则保留现有凭证' : '注意不是 __Secure-1PAPISID'} autoComplete="off" /></Form.Item>
         <Form.Item name="secure_1psidts" label="__Secure-1PSIDTS" rules={credentialRules}><Input.Password disabled={editing?.status === 'busy'} placeholder={editing ? '留空则保留现有凭证' : '同一账号的 PSIDTS'} autoComplete="off" /></Form.Item>
         {editing?.status === 'busy' && <p className="muted">账号正在生成，当前仅可修改名称。</p>}
       </Form>
+    </Modal>
+    <Modal title="导入账号 JSON" open={importing} onCancel={() => { setImportText(''); setImportError(''); setImporting(false); }} onOk={() => applyImport(importText)} okText="填入表单" cancelText="取消" destroyOnHidden>
+      <p className="muted">选择扩展导出的文件，或粘贴 JSON。仅在浏览器解析；确认表单并保存后才发送到当前管理服务。</p>
+      <input aria-label="选择账号 JSON 文件" type="file" accept=".json,application/json" onChange={event => void importFile(event.target.files?.[0])} />
+      <Input.TextArea aria-label="粘贴账号 JSON" placeholder="在这里粘贴 JSON（包含敏感 Cookie，请勿分享）" value={importText} onChange={event => setImportText(event.target.value)} maxLength={65536} rows={7} style={{marginTop:16}} autoComplete="off" />
+      {importError && <Alert style={{marginTop:12}} type="error" title={importError} showIcon/>}
     </Modal>
   </ConfigProvider>;
 }

@@ -172,6 +172,28 @@ Results are `valid`, `invalid` (unauthenticated) or `unavailable` (network/confi
 failure), and represent only the check time. An invalid result does not automatically
 pause or disable the worker: runtime state and login-check results are shown separately.
 
+### Browser extension and JSON import
+
+The local [Gemini Session Exporter](extensions/gemini-session-exporter/README.md)
+provides a Manifest V3 popup for Chrome/Edge. It reads only `__Secure-1PSID` and
+`__Secure-1PSIDTS` on an explicit click, using the active tab's cookie store. It tries
+to detect the current email from visible account controls; always confirm it before
+exporting. There is no background collector or network upload. A dedicated browser
+profile/single-account session is required to avoid associating shared Google cookies
+with the wrong email; non-default account routes are rejected by this MVP.
+
+In **新增账号** or **编辑**, click **导入 JSON** and select the exported file or paste
+its contents. JSON is parsed locally and only the account name and two credential
+fields are copied into the form. IDs, file paths, API keys and enabled flags are never
+imported. Confirm the form and save to perform server-side login validation. Both
+extension exports and existing `{ "cookies": { ... } }`/flat Cookie JSON are supported.
+The limit is 64KB per import. Imported/pasted JSON is cleared after filling or closing.
+Files and clipboard contents contain login credentials and must remain private.
+
+Extension logic tests (synthetic data only): `node --test tests/test_cookie_export_import.mjs`.
+Actual Chrome installation, Cookie access and email detection require a manual browser
+verification; mocked API tests are not proof of live Google compatibility.
+
 ### Multiple accounts
 
 Use [accounts.example.json](accounts.example.json) as a template and store the real
