@@ -217,3 +217,9 @@ state/
 web/node_modules/
 web/dist/
 web/*.tsbuildinfo
+
+# Local deployment settings and exports
+/bridge.yaml
+/.env
+/data/
+/gemini-accounts-*.json

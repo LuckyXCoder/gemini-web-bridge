@@ -1266,3 +1266,83 @@ python -m gemini_webapi.server
 并发和分配策略。管理页面生图测试的等待时间随后端超时调整，额外留 30 秒。
 嵌入式 Python 调用显式传入的 `create_app(timeout=..., queue_size=...)`
 优先于 YAML；普通启动和本地预览脚本未显式传入时使用 YAML。
+
+## Docker / Compose MVP
+
+The frontend and Python HTTP server run in one image and one service process.
+No separate frontend container, database, Redis or Nginx is required.
+
+```bash
+# First start, from the repository root:
+cp bridge.example.yaml bridge.yaml
+chmod 644 bridge.yaml  # scheduler settings only; readable by container UID 10001
+# Optional: cp .env.example .env, then configure an outbound proxy if required.
+docker compose up -d --build
+```
+
+Open `http://127.0.0.1:18089/admin/`. The default host port deliberately differs
+from the local Python preview (18088). An empty account list is supported:
+import your exported account JSON through the management page.
+
+The first start creates independent keys in the persistent data volume. Keys
+are never printed in startup logs. Retrieve them locally when needed:
+
+```bash
+# For management page login:
+docker compose exec gemini-bridge cat /data/keys/admin-key.txt
+# For CPA / API callers (different from the administrator key):
+docker compose exec gemini-bridge cat /data/keys/service-key.txt
+```
+
+The container runs as UID/GID 10001. The named `bridge-data` volume holds keys,
+`accounts.json`, managed credential files, renewal caches and logs under `/data`.
+They survive restart and container recreation. **Do not use `docker compose down -v`
+when you want to keep accounts.** To back up, retain the volume or export accounts;
+account JSON export does not include service/admin keys or historical logs.
+
+`bridge.yaml` is mounted read-only. Edit it on the host and recreate the service
+to apply startup settings (recreation also refreshes a bind mount after editors
+replace files atomically):
+
+```bash
+docker compose up -d --force-recreate
+# Stop without deleting the data volume:
+docker compose down
+```
+
+On OrbStack, use `GEMINI_PROXY=http://host.docker.internal:10808` in `.env` if
+Google access requires the host v2rayN proxy. `127.0.0.1` inside a container is
+not the host. Linux deployments must provide their own reachable proxy endpoint
+when needed; no existing CPA, CPAMP or Nginx settings are changed by this Compose.
+The published port binds only to host loopback. Remote administration can use
+an SSH tunnel; CPA in another container needs an explicitly reachable Bridge
+address/network before integration. Do not assume its `localhost` is this service.
+
+### Container logs
+
+```bash
+# Console: startup, access logs, warnings and safe diagnostic events
+docker compose logs --tail=100 -f gemini-bridge
+# Dedicated sanitized JSON diagnostics
+docker compose exec gemini-bridge tail -f /data/logs/diagnostics.jsonl
+# Status (health check only reads the local admin page, never calls Google)
+docker compose ps
+```
+
+There are two independent limits: diagnostics use 5 MiB per file plus 3 backups
+(about 20 MiB); Docker `json-file` uses 10m and at most 3 files (about 30 MB).
+Oldest files are removed at rotation. HTTP health checks only establish local
+service readiness, not account validity. Automatic restart handles process exits;
+it does not repair expired Google sessions. Stopping the service can cancel an
+in-flight generation with an unknown upstream outcome; do not immediately retry.
+
+This MVP keeps existing log levels. YAML runtime log-level switches/reload are
+not implemented yet. Do not enable raw upstream SDK DEBUG output to diagnose
+credentials; use the dedicated sanitized events. No real account data, local
+configuration, logs, `.git`, tests or browser captures enter the build context.
+
+Images are built locally for the Docker host architecture; no public image has
+been published by this setup. Optional `GEMINI_BRIDGE_VERSION` sets package build
+metadata, and `GEMINI_BRIDGE_IMAGE` sets the image tag. For releases use a fixed tag
+and retain the corresponding AGPL source revision; this local MVP defaults to
+`gemini-web-bridge:local` / `0.0.0+docker`.

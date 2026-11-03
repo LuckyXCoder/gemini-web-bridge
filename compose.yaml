@@ -1,0 +1,33 @@
+name: gemini-web-bridge
+
+services:
+  gemini-bridge:
+    image: ${GEMINI_BRIDGE_IMAGE:-gemini-web-bridge:local}
+    build:
+      context: .
+      args:
+        VERSION: ${GEMINI_BRIDGE_VERSION:-0.0.0+docker}
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    ports:
+      - "127.0.0.1:${GEMINI_BRIDGE_PUBLISH_PORT:-18089}:18088"
+    environment:
+      # Optional proxy. On OrbStack: http://host.docker.internal:10808.
+      GEMINI_PROXY: ${GEMINI_PROXY:-}
+    volumes:
+      - bridge-data:/data
+      - type: bind
+        source: ${GEMINI_BRIDGE_CONFIG_PATH:-./bridge.yaml}
+        target: /app/bridge.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  bridge-data:
