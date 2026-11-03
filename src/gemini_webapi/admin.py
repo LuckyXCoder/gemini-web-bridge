@@ -130,6 +130,7 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
                 for a in pool
             ],
             "queue_depth": app.state.queue.qsize(),
+            "scheduler": app.state.scheduler,
         }
 
     async def authorize(authorization: str | None = Header(default=None)):

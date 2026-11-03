@@ -1239,3 +1239,30 @@ SDK 既有日志不等同于这份独立诊断日志，请勿直接上传完整�
 
 导出文件包含可用于登录的凭证，不提交 Git。迁移后应停止源端服务，
 避免本地与云端同时维护同一会话；云端仍需独立验证登录和生图。
+
+### YAML 调度配置
+
+复制仓库中的 `bridge.example.yaml` 到自己的配置文件：
+
+```yaml
+scheduler:
+  queue_capacity: 4
+  execution_timeout_seconds: 300
+```
+
+通过环境变量指定文件后启动：
+
+```bash
+export GEMINI_BRIDGE_CONFIG=/absolute/path/bridge.yaml
+python -m gemini_webapi.server
+```
+
+两个字段必须是正整数，允许省略任一字段并使用默认值。未设置环境变量时
+默认排队上限 4、执行超时 300 秒。未知字段、非法 YAML、找不到文件都会
+拒绝启动，避免错误配置静默生效。配置只在创建服务时读取，修改后需要重启。
+
+排队上限只计算等待任务，不含执行中的任务；执行超时不包含排队时间。
+单账号并发仍为 1，仍由空闲账号取共享 FIFO 队列，不支持在 YAML 中修改
+并发和分配策略。管理页面生图测试的等待时间随后端超时调整，额外留 30 秒。
+嵌入式 Python 调用显式传入的 `create_app(timeout=..., queue_size=...)`
+优先于 YAML；普通启动和本地预览脚本未显式传入时使用 YAML。

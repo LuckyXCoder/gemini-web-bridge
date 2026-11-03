@@ -10,7 +10,7 @@ import { parseCredentialImport } from './credentialImport.mjs';
 type Outcome = { time: number; success: boolean; duration: number; error: string | null };
 type ImageTest = { prompt?: string; time: number; model: string; status: string; error: string | null; duration?: number };
 type Account = { image_test?: ImageTest; id: string; display_name?: string; enabled: boolean; status: string; login_status: string; last_checked_at: number | null; checking: boolean; removing: boolean; recent: Outcome[] };
-type Snapshot = { data: Account[]; queue_depth: number };
+type Snapshot = { data: Account[]; queue_depth: number; scheduler?: { queue_capacity: number; execution_timeout_seconds: number } };
 type AccountForm = { display_name: string; secure_1psid?: string; secure_1psidts?: string };
 const nameOf = (account: Account) => account.display_name || account.id;
 const defaultTestPrompt = '生成一张窗边橘猫的图片，温暖自然光，完整展示猫的身体，不要文字或水印。';
@@ -128,7 +128,7 @@ function App() {
     if (!testAccount || (promptMode === 'custom' && !customPrompt.trim())) return;
     setAction('image-test'); setTestResult(null); setTestImage(''); setTestError('');
     try {
-      const result = await request(`/accounts/${encodeURIComponent(testAccount.id)}/image-test`, token, 'POST', {model: testModel, ...(promptMode === 'custom' ? {prompt: customPrompt.trim()} : {})}, 330000);
+      const result = await request(`/accounts/${encodeURIComponent(testAccount.id)}/image-test`, token, 'POST', {model: testModel, ...(promptMode === 'custom' ? {prompt: customPrompt.trim()} : {})}, Math.min(2147483647, ((snapshot.scheduler?.execution_timeout_seconds ?? 300) + 30) * 1000));
       setTestResult(result.image_test);
       const encoded = result.image?.data?.[0]?.b64_json;
       if (encoded) setTestImage('data:image/' + (encoded.startsWith('iVBOR') ? 'png' : encoded.startsWith('UklGR') ? 'webp' : 'jpeg') + ';base64,' + encoded);
