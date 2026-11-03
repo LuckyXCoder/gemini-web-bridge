@@ -1,6 +1,7 @@
-"""Local administration API; credentials are write-only and separate from service keys."""
+"""Local administration API; credential export requires the separate administrator key."""
 
 import asyncio
+import hashlib
 import hmac
 import os
 import shutil
@@ -13,8 +14,10 @@ from typing import Literal
 
 import orjson
 from fastapi import Depends, Header, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
+from .constants import COOKIE_CACHE_EXTENSION, COOKIE_CACHE_PREFIX
 from .diagnostics import event, scope
 from .exceptions import AuthError
 from .server import DisplayName
@@ -60,6 +63,18 @@ class UpdateCredentials(Credentials):
 class Enabled(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = Field(strict=True)
+
+
+class TransferAccount(Credentials):
+    display_name: DisplayName
+    enabled: bool = Field(default=True, strict=True)
+
+
+class AccountTransfer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal[1] = 1
+    kind: Literal["gemini-web-bridge-accounts"] = "gemini-web-bridge-accounts"
+    accounts: list[TransferAccount] = Field(max_length=100)
 
 
 class ImageTestRequest(BaseModel):
@@ -200,6 +215,122 @@ def register_admin(app, pool, config_path, admin_key, initialize, close, spawn, 
             "enabled": True,
         }
         return account, entry
+
+    def export_credentials(entry):
+        """Read the current cookie pair; never export file paths or other cookies."""
+        raw = orjson.loads((config_path.parent / entry["cookies_file"]).read_bytes())
+        base = raw.get("cookies", raw)
+        pair = {name: base.get(name, "") for name in ("__Secure-1PSID", "__Secure-1PSIDTS")}
+        psid = pair["__Secure-1PSID"]
+        if not isinstance(psid, str) or not psid:
+            raise ValueError("Missing credentials")
+        cache_name = (
+            COOKIE_CACHE_PREFIX
+            + hashlib.sha256(psid.strip().encode()).hexdigest()[:32]
+            + COOKIE_CACHE_EXTENSION
+        )
+        cache = config_path.parent / entry["cache_dir"] / cache_name
+        if cache.is_file():
+            cached = orjson.loads(cache.read_bytes())
+            jar = cached.get("cookies", []) if isinstance(cached, dict) else cached
+            for cookie in jar:
+                if (
+                    cookie.get("name") in pair
+                    and cookie.get("domain") in (".google.com", "google.com")
+                    and cookie.get("path", "/") == "/"
+                    and (not cookie.get("expires") or cookie["expires"] > time.time())
+                ):
+                    pair[cookie["name"]] = cookie["value"]
+        account = find(entry["id"])
+        live = getattr(account.client, "cookies", None)
+        if live is not None and getattr(account.client, "_running", False):
+            for cookie in live.jar:
+                if (
+                    cookie.name in pair
+                    and cookie.domain in (".google.com", "google.com")
+                    and cookie.path == "/"
+                ):
+                    pair[cookie.name] = cookie.value
+        credentials = Credentials(
+            secure_1psid=pair["__Secure-1PSID"], secure_1psidts=pair["__Secure-1PSIDTS"]
+        )
+        return {
+            "display_name": entry.get("display_name") or entry["id"],
+            "enabled": entry["enabled"],
+            "secure_1psid": credentials.secure_1psid.get_secret_value(),
+            "secure_1psidts": credentials.secure_1psidts.get_secret_value(),
+        }
+
+    @app.post("/admin/api/accounts/export", dependencies=[Depends(authorize)])
+    async def export_accounts():
+        async with lock:
+            if any(a.status == "busy" or a.checking or a.removing for a in pool):
+                raise HTTPException(409, "Accounts are busy; retry export afterward")
+            if len(entries) > 100:
+                raise HTTPException(400, "Export supports at most 100 accounts")
+            try:
+                data = [export_credentials(entry) for entry in entries]
+            except Exception:
+                raise HTTPException(
+                    500, "Could not export all account credentials; no partial file returned"
+                ) from None
+        return JSONResponse(
+            {"schema_version": 1, "kind": "gemini-web-bridge-accounts", "accounts": data},
+            headers={
+                "Cache-Control": "no-store",
+                "Pragma": "no-cache",
+                "Content-Disposition": 'attachment; filename="gemini-accounts.json"',
+            },
+        )
+
+    @app.post("/admin/api/accounts/import", dependencies=[Depends(authorize)])
+    async def import_accounts(request: AccountTransfer):
+        results = []
+        for index, source in enumerate(request.accounts):
+            async with lock:
+                account = None
+                committed = False
+                try:
+                    # The UI sends one account at a time to show progress and bound request time.
+                    # Check both original and rotated identities before creating a new account.
+                    psid = source.secure_1psid.get_secret_value().strip()
+                    verify_duplicate(psid)
+                    for entry in entries:
+                        if export_credentials(entry)["secure_1psid"] == psid:
+                            raise HTTPException(409, "These credentials are already configured")
+                    account, entry = await candidate("account-" + uuid.uuid4().hex[:16], source)
+                    account.display_name = source.display_name
+                    account.enabled = source.enabled
+                    entry.update(display_name=source.display_name, enabled=source.enabled)
+                    if not account.enabled:
+                        await close(account, reason="import_disabled")
+                        account.status = "disabled"
+                    persist([*entries, entry])
+                    pool.append(account)
+                    committed = True
+                    if account.enabled:
+                        spawn(account)
+                    results.append({"index": index, "status": "imported", "id": account.id})
+                except HTTPException as exc:
+                    results.append(
+                        {
+                            "index": index,
+                            "status": "skipped" if exc.status_code == 409 else "failed",
+                            "reason": "duplicate_credentials"
+                            if exc.status_code == 409
+                            else "validation_or_save_failed",
+                        }
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    results.append(
+                        {"index": index, "status": "failed", "reason": "validation_or_save_failed"}
+                    )
+                finally:
+                    if account is not None and not committed:
+                        await close(account, reason="import_failed")
+        return JSONResponse({"results": results}, headers={"Cache-Control": "no-store"})
 
     @app.get("/admin/api/accounts", dependencies=[Depends(authorize)])
     async def accounts():
