@@ -529,3 +529,113 @@ class TestAdmin(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prompts, [DEFAULT_TEST_PROMPT, "一只小狗"])
         self.assertEqual(default.json()["image_test"]["prompt"], DEFAULT_TEST_PROMPT)
         self.assertEqual(custom.json()["image_test"]["prompt"], "一只小狗")
+
+    async def test_bulk_export_uses_rotated_values_and_excludes_paths(self):
+        import hashlib
+
+        from curl_cffi.requests import Cookies
+
+        from gemini_webapi.constants import COOKIE_CACHE_EXTENSION, COOKIE_CACHE_PREFIX
+
+        await self.add()
+        denied = await self.http.post(
+            "/admin/api/accounts/export", headers={"Authorization": "Bearer service-test"}
+        )
+        self.assertEqual(denied.status_code, 401)
+        entry = json.loads(self.path.read_text())["accounts"][0]
+        cache = Path(entry["cache_dir"]) / (
+            COOKIE_CACHE_PREFIX
+            + hashlib.sha256(b"cookie-a").hexdigest()[:32]
+            + COOKIE_CACHE_EXTENSION
+        )
+        cache.write_text(
+            json.dumps(
+                {
+                    "cookies": [
+                        {
+                            "name": "__Secure-1PSIDTS",
+                            "value": "cached-ts",
+                            "domain": ".google.com",
+                            "path": "/",
+                        }
+                    ]
+                }
+            )
+        )
+        exported = await self.http.post("/admin/api/accounts/export")
+        self.assertEqual(exported.json()["accounts"][0]["secure_1psidts"], "cached-ts")
+        account = self.app.state.accounts[0]
+        account.client.cookies = Cookies()
+        account.client.cookies.set("__Secure-1PSID", "rotated-psid", domain=".google.com")
+        account.client.cookies.set("__Secure-1PSIDTS", "live-ts", domain=".google.com")
+        exported = await self.http.post("/admin/api/accounts/export")
+        row = exported.json()["accounts"][0]
+        self.assertEqual(row["secure_1psid"], "rotated-psid")
+        self.assertEqual(row["secure_1psidts"], "live-ts")
+        self.assertEqual(set(row), {"display_name", "enabled", "secure_1psid", "secure_1psidts"})
+        self.assertEqual(exported.headers["cache-control"], "no-store")
+        self.assertNotIn(str(self.path.parent), exported.text)
+        self.assertNotIn("admin-test", exported.text)
+        # The newest rotated PSID must also be treated as an existing account.
+        response = await self.http.post("/admin/api/accounts/import", json=exported.json())
+        self.assertEqual(response.json()["results"][0]["status"], "skipped")
+
+    async def test_bulk_roundtrip_names_disabled_and_duplicate_skip(self):
+        await self.add()
+        await self.http.patch(
+            "/admin/api/accounts/a", json={"display_name": "迁移账号@example.com"}
+        )
+        await self.http.put("/admin/api/accounts/a/enabled", json={"enabled": False})
+        bundle = (await self.http.post("/admin/api/accounts/export")).json()
+        await self.http.delete("/admin/api/accounts/a")
+        response = await self.http.post("/admin/api/accounts/import", json=bundle)
+        self.assertEqual(response.json()["results"][0]["status"], "imported")
+        snapshot = (await self.http.get("/admin/api/accounts")).json()["data"]
+        self.assertEqual(snapshot[0]["display_name"], "迁移账号@example.com")
+        self.assertFalse(snapshot[0]["enabled"])
+        self.assertEqual(snapshot[0]["status"], "disabled")
+        self.assertNotEqual(snapshot[0]["id"], "a")
+        repeated = await self.http.post("/admin/api/accounts/import", json=bundle)
+        self.assertEqual(repeated.json()["results"][0]["status"], "skipped")
+        self.assertEqual(len(self.app.state.accounts), 1)
+
+    async def test_bulk_partial_failure_and_invalid_payload(self):
+        bundle = {
+            "schema_version": 1,
+            "kind": "gemini-web-bridge-accounts",
+            "accounts": [
+                {
+                    "display_name": "有效",
+                    "enabled": True,
+                    "secure_1psid": "valid-a",
+                    "secure_1psidts": "test-ts",
+                },
+                {
+                    "display_name": "失效",
+                    "enabled": True,
+                    "secure_1psid": "invalid",
+                    "secure_1psidts": "test-ts",
+                },
+            ],
+        }
+        denied = await self.http.post(
+            "/admin/api/accounts/import",
+            json=bundle,
+            headers={"Authorization": "Bearer service-test"},
+        )
+        self.assertEqual(denied.status_code, 401)
+        response = await self.http.post("/admin/api/accounts/import", json=bundle)
+        self.assertEqual([r["status"] for r in response.json()["results"]], ["imported", "failed"])
+        self.assertEqual(len(self.app.state.accounts), 1)
+        self.assertNotIn("test-ts", response.text)
+        bundle["accounts"][0]["cookies_file"] = "/tmp/untrusted"
+        self.assertEqual(
+            (await self.http.post("/admin/api/accounts/import", json=bundle)).status_code, 400
+        )
+        self.assertEqual(len(self.app.state.accounts), 1)
+
+    async def test_bulk_export_busy_is_rejected(self):
+        await self.add()
+        self.app.state.accounts[0].checking = True
+        self.assertEqual((await self.http.post("/admin/api/accounts/export")).status_code, 409)
+        self.app.state.accounts[0].checking = False

@@ -1,0 +1,8 @@
+# Read once at startup via GEMINI_BRIDGE_CONFIG. Restart after editing.
+# One worker per account; existing FIFO queue distribution is unchanged.
+scheduler:
+  # Waiting tasks across the entire service; excludes running tasks.
+  queue_capacity: 4
+  # Execution budget including initialization, generation and download.
+  # Queue waiting time is not included.
+  execution_timeout_seconds: 300

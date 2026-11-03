@@ -4,12 +4,13 @@ import { Alert, Button, Card, ConfigProvider, Empty, Form, Input, Layout, Menu, 
 import { ApiOutlined, CheckCircleOutlined, ClockCircleOutlined, DeleteOutlined, EditOutlined, LogoutOutlined, PlusOutlined, ReloadOutlined, SafetyCertificateOutlined, TeamOutlined } from '@ant-design/icons';
 import 'antd/dist/reset.css';
 import './style.css';
+import { parseAccountTransfer, transferKind, type TransferAccount } from './accountTransfer';
 import { parseCredentialImport } from './credentialImport.mjs';
 
 type Outcome = { time: number; success: boolean; duration: number; error: string | null };
 type ImageTest = { prompt?: string; time: number; model: string; status: string; error: string | null; duration?: number };
 type Account = { image_test?: ImageTest; id: string; display_name?: string; enabled: boolean; status: string; login_status: string; last_checked_at: number | null; checking: boolean; removing: boolean; recent: Outcome[] };
-type Snapshot = { data: Account[]; queue_depth: number };
+type Snapshot = { data: Account[]; queue_depth: number; scheduler?: { queue_capacity: number; execution_timeout_seconds: number } };
 type AccountForm = { display_name: string; secure_1psid?: string; secure_1psidts?: string };
 const nameOf = (account: Account) => account.display_name || account.id;
 const defaultTestPrompt = '生成一张窗边橘猫的图片，温暖自然光，完整展示猫的身体，不要文字或水印。';
@@ -39,6 +40,11 @@ function App() {
   const [testResult, setTestResult] = useState<ImageTest | null>(null);
   const [testImage, setTestImage] = useState('');
   const [testError, setTestError] = useState('');
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkAccounts, setBulkAccounts] = useState<TransferAccount[]>([]);
+  const [bulkResults, setBulkResults] = useState<{name: string; status: string}[]>([]);
+  const [bulkError, setBulkError] = useState('');
+  const [bulkProgress, setBulkProgress] = useState(0);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<Account | null>(null);
   const [importing, setImporting] = useState(false);
@@ -122,7 +128,7 @@ function App() {
     if (!testAccount || (promptMode === 'custom' && !customPrompt.trim())) return;
     setAction('image-test'); setTestResult(null); setTestImage(''); setTestError('');
     try {
-      const result = await request(`/accounts/${encodeURIComponent(testAccount.id)}/image-test`, token, 'POST', {model: testModel, ...(promptMode === 'custom' ? {prompt: customPrompt.trim()} : {})}, 330000);
+      const result = await request(`/accounts/${encodeURIComponent(testAccount.id)}/image-test`, token, 'POST', {model: testModel, ...(promptMode === 'custom' ? {prompt: customPrompt.trim()} : {})}, Math.min(2147483647, ((snapshot.scheduler?.execution_timeout_seconds ?? 300) + 30) * 1000));
       setTestResult(result.image_test);
       const encoded = result.image?.data?.[0]?.b64_json;
       if (encoded) setTestImage('data:image/' + (encoded.startsWith('iVBOR') ? 'png' : encoded.startsWith('UklGR') ? 'webp' : 'jpeg') + ';base64,' + encoded);
@@ -197,6 +203,42 @@ function App() {
     if (file.size > 65536) { setImportError('文件不能超过 64KB'); return; }
     try { applyImport(await file.text()); } catch { setImportError('文件读取失败'); }
   }
+  async function exportAccounts() {
+    setAction('export');
+    try {
+      const data = await request('/accounts/export', token, 'POST');
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], {type:'application/json'}));
+      const link = document.createElement('a');
+      link.href = url; link.download = 'gemini-accounts-' + new Date().toISOString().slice(0,10) + '.json';
+      link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast.success(`已发起下载，共 ${data.accounts.length} 个账号`);
+    } catch(e) { toast.error((e as Error).message); }
+    finally {setAction(null);}
+  }
+  async function loadBulkFile(file?: File) {
+    setBulkAccounts([]); setBulkResults([]); setBulkError(''); setBulkProgress(0);
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {setBulkError('文件不能超过 2MB'); return;}
+    try {setBulkAccounts(parseAccountTransfer(await file.text()));}
+    catch(e) {setBulkError((e as Error).message);}
+  }
+  async function importAccounts() {
+    setAction('bulk-import'); setBulkError(''); setBulkResults([]); setBulkProgress(0);
+    try {
+      for (const [index, account] of bulkAccounts.entries()) {
+        const response = await request('/accounts/import', token, 'POST', {schema_version:1,kind:transferKind,accounts:[account]});
+        const status = response.results[0]?.status;
+        setBulkResults(previous => [...previous, {name:account.display_name, status: status === 'imported' ? '导入成功' : status === 'skipped' ? '凭证重复，已跳过' : '验证或保存失败，未导入'}]);
+        setBulkProgress(index+1);
+      }
+    } catch(e) {
+      setBulkError(['TimeoutError','AbortError'].includes((e as Error).name) ? '等待超时，部分账号可能已保存。请刷新列表确认，再重新导入；重复凭证会跳过。' : (e as Error).message);
+    } finally {
+      setBulkAccounts([]);
+      try {await refresh();} catch(e) {setError((e as Error).message);}
+      setAction(null);
+    }
+  }
   async function removeAccount(account: Account) {
     setAction('delete:' + account.id);
     try {
@@ -225,6 +267,8 @@ function App() {
         <div className="heading"><div><Typography.Title level={3}>账号概览</Typography.Title><Typography.Text type="secondary">查看运行状态，按需验证账号凭证</Typography.Text></div><Space wrap>
           <Tooltip title="刷新服务记录，不重新验证 Google 登录"><Button icon={<ReloadOutlined />} loading={loading} disabled={action !== null} onClick={() => void manualRefresh()}>刷新列表</Button></Tooltip>
           <Button icon={<SafetyCertificateOutlined />} loading={action === 'batch'} disabled={locked || !snapshot.data.length} onClick={() => void batchCheck()}>{progress ? `验证中 ${progress.done}/${progress.total}` : '批量验证'}</Button>
+          <Button loading={action === 'export'} disabled={locked || !snapshot.data.length} onClick={() => void exportAccounts()}>导出全部账号</Button>
+          <Button disabled={locked} onClick={() => {setBulkOpen(true); setBulkAccounts([]); setBulkResults([]); setBulkError(''); setBulkProgress(0);}}>批量导入</Button>
           <Button type="primary" icon={<PlusOutlined />} disabled={locked} onClick={() => { addForm.resetFields(); setEditing(null); setAdding(true); }}>新增账号</Button>
         </Space></div>
         <div className="stats">{[{ title: '账号总数', value: snapshot.data.length, icon: <TeamOutlined /> }, { title: '空闲可用', value: snapshot.data.filter(a => a.enabled && a.status === 'idle').length, icon: <CheckCircleOutlined /> }, { title: '等待任务', value: snapshot.queue_depth, icon: <ClockCircleOutlined /> }].map(item => <Card key={item.title}><Statistic title={item.title} value={updated === null ? "—" : item.value} prefix={item.icon} /></Card>)}</div>
@@ -235,6 +279,13 @@ function App() {
           <div className="note"><span className="dot success" />成功 <span className="dot failure" />失败 <span>最近 10 次请求 · 重启后清空</span></div>
         </Card>
       </Layout.Content></Layout></Layout>}
+    <Modal title="批量导入账号" open={bulkOpen} onCancel={() => {setBulkOpen(false); setBulkAccounts([]); setBulkResults([]); setBulkError('');}} onOk={() => void importAccounts()} okText={action === 'bulk-import' ? `正在导入 ${bulkProgress}/${bulkAccounts.length}` : '验证并导入'} cancelText="关闭" confirmLoading={action === 'bulk-import'} okButtonProps={{disabled:locked || !bulkAccounts.length}} closable={action !== 'bulk-import'} maskClosable={action !== 'bulk-import'} cancelButtonProps={{disabled:action === 'bulk-import'}} destroyOnHidden>
+      <p className="muted">选择其他 Bridge 导出的账号 JSON。保留名称与启用状态，逐个验证；重复凭证跳过，不覆盖已有账号。</p>
+      <input aria-label="选择批量账号 JSON" type="file" accept=".json,application/json" disabled={action === 'bulk-import'} onChange={event => {void loadBulkFile(event.target.files?.[0]); event.target.value='';}} />
+      {bulkAccounts.length > 0 && <p>已读取 {bulkAccounts.length} 个账号</p>}
+      {bulkResults.map((result,index) => <p key={index}>{result.name}：{result.status}</p>)}
+      {bulkError && <Alert type="error" title={bulkError} style={{marginTop:12}} />}
+    </Modal>
     <Modal title={`测试生图 · ${testAccount ? nameOf(testAccount) : ''}`} open={testAccount !== null} onCancel={() => { setTestAccount(null); setTestImage(''); setTestResult(null); }} onOk={() => void runImageTest()} okText="生成测试图片" cancelText="关闭" confirmLoading={action === 'image-test'} okButtonProps={{disabled: locked || testResult !== null || Boolean(testError) || (promptMode === 'custom' && !customPrompt.trim())}} closable={action !== 'image-test'} maskClosable={action !== 'image-test'} cancelButtonProps={{disabled: action === 'image-test'}} destroyOnHidden>
       <p className="muted">使用当前账号生成一张测试图，会消耗生图额度。失败不自动重试或切换账号。</p>
       <Form layout="vertical">

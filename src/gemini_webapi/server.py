@@ -26,6 +26,7 @@ from .client import _SUPPORTED_IMAGE_ASPECT_RATIOS
 from .diagnostics import configure as configure_diagnostics
 from .diagnostics import event, scope
 from .exceptions import AuthError, UsageLimitExceededError
+from .server_config import load_server_config
 from .types import GeneratedImage
 from .utils import logger
 
@@ -199,8 +200,11 @@ def load_accounts(allow_empty=False):
     return accounts
 
 
-def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=None):
+def create_app(client=None, api_key=None, timeout=None, queue_size=None, accounts=None):
     """One process, one worker per account, one bounded shared queue."""
+    settings = load_server_config().scheduler
+    timeout = settings.execution_timeout_seconds if timeout is None else timeout
+    queue_size = settings.queue_capacity if queue_size is None else queue_size
     configure_diagnostics()
     key = api_key or os.environ.get("GEMINI_BRIDGE_API_KEY")
     if not key:
@@ -505,6 +509,11 @@ def create_app(client=None, api_key=None, timeout=300, queue_size=4, accounts=No
         redoc_url=None,
         openapi_url=None,
     )
+
+    app.state.scheduler = {
+        "queue_capacity": queue_size,
+        "execution_timeout_seconds": timeout,
+    }
 
     @app.exception_handler(HTTPException)
     async def http_error(request, exc):
